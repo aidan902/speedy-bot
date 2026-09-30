@@ -43,15 +43,15 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         let header = NSMenuItem(title: "Speedy Bot", action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
-        menu.addItem(toggle("On", on: state.mode == .on, #selector(setOn)))
-        menu.addItem(toggle("Auto: only while ScreenConnect is open", on: state.mode == .auto, #selector(setAuto)))
-        menu.addItem(toggle("Off", on: state.mode == .off, #selector(setOff)))
+        menu.addItem(choice("On", symbol: "power", on: state.mode == .on, #selector(setOn)))
+        menu.addItem(choice("Auto: only while ScreenConnect is open", symbol: "bolt.horizontal", on: state.mode == .auto, #selector(setAuto)))
+        menu.addItem(choice("Off", symbol: "poweroff", on: state.mode == .off, #selector(setOff)))
         menu.addItem(.separator())
         let features = [
-            toggle("Paste screenshots into ChatGPT", on: state.screenshotPaste, #selector(toggleScreenshot)),
-            toggle("\(state.typingShortcutLabel) types into ScreenConnect", on: state.remoteTyping, #selector(toggleTyping)),
-            toggle("\(state.captureShortcutLabel) captures the ScreenConnect window", on: state.captureWindow, #selector(toggleCapture)),
-            toggle("Save screenshots for documentation", on: state.saveScreenshots, #selector(toggleSave)),
+            toggle("Paste screenshots into ChatGPT", symbol: "photo.on.rectangle.angled", on: state.screenshotPaste, #selector(toggleScreenshot)),
+            toggle("\(state.typingShortcutLabel) types into ScreenConnect", symbol: "keyboard", on: state.remoteTyping, #selector(toggleTyping)),
+            toggle("\(state.captureShortcutLabel) captures the ScreenConnect window", symbol: "macwindow.badge.plus", on: state.captureWindow, #selector(toggleCapture)),
+            toggle("Save screenshots for documentation", symbol: "folder.badge.plus", on: state.saveScreenshots, #selector(toggleSave)),
         ]
         for f in features {
             f.isEnabled = state.masterEnabled
@@ -71,9 +71,17 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(action("Quit Speedy Bot", #selector(quit), key: "q"))
     }
 
-    private func toggle(_ title: String, on: Bool, _ selector: Selector) -> NSMenuItem {
+    /// A feature switch: the same round blue icon as in the window, instead of a tick.
+    private func toggle(_ title: String, symbol: String, on: Bool, _ selector: Selector) -> NSMenuItem {
         let i = action(title, selector)
-        i.state = on ? .on : .off
+        i.image = Self.roundIcon(symbol: symbol, on: on, emptyWhenOff: false)
+        return i
+    }
+
+    /// One of several choices: a blue icon for the chosen one, an empty ring for the others.
+    private func choice(_ title: String, symbol: String, on: Bool, _ selector: Selector) -> NSMenuItem {
+        let i = action(title, selector)
+        i.image = Self.roundIcon(symbol: symbol, on: on, emptyWhenOff: true)
         return i
     }
 
@@ -81,6 +89,29 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         let i = NSMenuItem(title: title, action: selector, keyEquivalent: key)
         i.target = self
         return i
+    }
+
+    /// Drawn on demand, so it follows light and dark mode.
+    private static func roundIcon(symbol: String, on: Bool, emptyWhenOff: Bool, size: CGFloat = 20) -> NSImage {
+        let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
+            let circle = NSBezierPath(ovalIn: rect.insetBy(dx: 0.5, dy: 0.5))
+            if on {
+                NSColor.systemBlue.setFill(); circle.fill()
+            } else if emptyWhenOff {
+                NSColor.secondaryLabelColor.withAlphaComponent(0.6).setStroke(); circle.lineWidth = 1.2; circle.stroke()
+            } else {
+                NSColor.labelColor.withAlphaComponent(0.12).setFill(); circle.fill()
+            }
+            guard on || !emptyWhenOff,
+                  let glyph = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+                    .withSymbolConfiguration(.init(pointSize: size * 0.48, weight: .semibold))?
+                    .withSymbolConfiguration(.init(paletteColors: [on ? .white : .secondaryLabelColor])) else { return true }
+            let g = glyph.size
+            glyph.draw(in: NSRect(x: rect.midX - g.width / 2, y: rect.midY - g.height / 2, width: g.width, height: g.height))
+            return true
+        }
+        image.isTemplate = false
+        return image
     }
 
     @objc private func setOn() { state.mode = .on }
