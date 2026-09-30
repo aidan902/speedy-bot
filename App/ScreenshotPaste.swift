@@ -194,7 +194,7 @@ final class ScreenshotPasteController {
     private func clicked(count: Int) {
         guard count == (trigger == .tripleClick ? 3 : 2), pasteEnabled, !pasting else { return }
         let point = WindowHitTest.pointer()
-        guard let target = chatGPTUnderPointer(point), !isCovered(point, target.app) else { return }
+        guard let target = chatGPTUnderPointer(point), !isCovered(point, target.app, window: target.window.windowID) else { return }
         if noteEarlyTrigger(byShortcut: false) { return }
         if let armed { paste(into: target.app, window: target.window, armed: armed, pointerMustStay: true) }
     }
@@ -220,7 +220,10 @@ final class ScreenshotPasteController {
 
     /// The window list only knows ordinary windows. A menu, popover or floating panel over ChatGPT belongs to
     /// someone else, and accessibility can see that.
-    private func isCovered(_ point: CGPoint, _ app: NSRunningApplication) -> Bool {
+    private func isCovered(_ point: CGPoint, _ app: NSRunningApplication, window: CGWindowID) -> Bool {
+        // Usually nothing is drawn over the window, and the window list says so at no cost. Only when something
+        // is there does accessibility get asked what it is (that question can take a moment with a web-based app).
+        guard WindowHitTest.somethingElseAbove(point, window: window, ownerPID: app.processIdentifier) else { return false }
         guard let owner = Paster.ownerPID(at: point), owner != app.processIdentifier else { return false }
         if !loggedOccluder {
             loggedOccluder = true
@@ -263,7 +266,7 @@ final class ScreenshotPasteController {
             if let target = shortcutTarget() { paste(into: target.app, window: target.window, armed: armed, pointerMustStay: false) }
         } else {
             let point = WindowHitTest.pointer()
-            if let target = chatGPTUnderPointer(point), !isCovered(point, target.app) {
+            if let target = chatGPTUnderPointer(point), !isCovered(point, target.app, window: target.window.windowID) {
                 paste(into: target.app, window: target.window, armed: armed, pointerMustStay: true)
             }
         }
@@ -356,10 +359,11 @@ final class ScreenshotPasteController {
         }
         dwellTicks += 1
         guard dwellTicks >= dwellNeeded else { return }
-        if isCovered(point, target.app) {
+        if isCovered(point, target.app, window: target.window.windowID) {
             dwellTicks = 0
             return
         }
+        SpeedyShared.log.notice("pointer came to rest on ChatGPT; pasting")
         paste(into: target.app, window: target.window, armed: armed, pointerMustStay: true)
     }
 

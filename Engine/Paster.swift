@@ -24,7 +24,7 @@ public enum Paster {
 
     /// The messaging timeout belongs to the element it is set on, so every element that is asked something gets
     /// one: a busy target must never hang this app's main thread for the 6-second system default.
-    private static let axTimeout: Float = 0.4
+    private static let axTimeout: Float = 0.25
 
     static func copy(_ e: AXUIElement, _ name: String) -> AnyObject? {
         AXUIElementSetMessagingTimeout(e, axTimeout)
@@ -142,8 +142,15 @@ public enum Paster {
         guard NSPasteboard.general.changeCount == expectedChangeCount else { return .clipboardChanged }
         let pid = app.processIdentifier
 
+        let started = ContinuousClock.now
+        var timeline = ""
         let wasFrontmost = NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
-        raise(pid: pid, window: window)
+        // Already in front, with the target window on top of its own windows: nothing to raise. Every
+        // accessibility call into a web-based app can take a noticeable moment, so none are made for nothing.
+        if !(wasFrontmost && WindowHitTest.frontWindow(ofPID: pid)?.windowID == window.windowID) {
+            raise(pid: pid, window: window)
+            timeline += " raise=\(ms(since: started))"
+        }
         if !wasFrontmost {
             let clock = ContinuousClock(); let start = clock.now
             var triedWorkspace = false
@@ -155,6 +162,7 @@ public enum Paster {
             }
             // A web-based app restores keyboard focus to its page a moment after the window becomes key.
             try? await Task.sleep(for: settle)
+            timeline += " activated=\(ms(since: started))"
         }
 
         // A held modifier would turn Cmd+V into something else (Cmd+Shift+V is "paste and match style").
@@ -170,6 +178,7 @@ public enum Paster {
            ["AXTextField", "AXSearchField", "AXComboBox", "AXSecureTextField"].contains(role) {
             return .otherFieldFocused
         }
+        timeline += " focusCheck=\(ms(since: started))"
         // ...then let the run loop catch up, and check everything that matters with nothing slow in between,
         // so the keystroke cannot land in an app the tech switched to while this was waiting.
         try? await Task.sleep(for: .milliseconds(10))
@@ -178,6 +187,11 @@ public enum Paster {
         guard NSPasteboard.general.changeCount == expectedChangeCount else { return .clipboardChanged }
         guard stillOnTarget() else { return .pointerLeft }
         postCommandV()
+        SpeedyShared.log.notice("paste timeline (ms):\(timeline, privacy: .public) cmdV=\(ms(since: started))")
         return .pasted
+    }
+
+    private static func ms(since start: ContinuousClock.Instant) -> Int {
+        Int((ContinuousClock.now - start) / .milliseconds(1))
     }
 }

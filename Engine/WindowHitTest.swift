@@ -37,6 +37,24 @@ public enum WindowHitTest {
         return nil
     }
 
+    /// Is any window of ANOTHER process (a menu, popover, floating panel, at whatever level) drawn over this point,
+    /// in front of the given window? Cheap: no accessibility call. The system's own menu-bar backing and this
+    /// app's own windows do not count.
+    public static func somethingElseAbove(_ p: CGPoint, window: CGWindowID, ownerPID: pid_t) -> Bool {
+        guard let raw = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return false }
+        let me = ProcessInfo.processInfo.processIdentifier
+        for d in raw {
+            if (d[kCGWindowNumber as String] as? CGWindowID) == window { return false }   // reached the target: nothing above
+            guard let pid = d[kCGWindowOwnerPID as String] as? pid_t, pid != ownerPID, pid != me,
+                  (d[kCGWindowOwnerName as String] as? String) != "Window Server",
+                  (d[kCGWindowAlpha as String] as? Double ?? 1) > 0.01,
+                  let bd = d[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: bd),
+                  r.contains(p) else { continue }
+            return true
+        }
+        return false
+    }
+
     /// The system's corner preview of a screenshot that was just taken is on screen. While it shows, the
     /// screenshot's file has not been saved yet.
     public static func screenshotPreviewVisible() -> Bool {

@@ -131,7 +131,9 @@ final class AppState: ObservableObject {
         let stored = SpeedyShared.defaults.string(forKey: SpeedyShared.modeKey).flatMap(MasterMode.init(rawValue:))
         if !enabled { return .off }
         if let stored, stored != .off { return stored }
-        return .on
+        // A fresh install starts in Auto: it only does anything while a ScreenConnect session is open, so it
+        // leaves the Mac alone the rest of the time until the tech decides otherwise.
+        return stored == nil ? .auto : .on
     }
 
     private func senseScreenConnect() {
