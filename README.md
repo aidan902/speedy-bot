@@ -5,7 +5,7 @@ A small Mac app for techs who live in ScreenConnect and ChatGPT. It removes thre
 ## What it does
 
 1. **Screenshots paste themselves into ChatGPT.** Take a screenshot (Cmd+Shift+3, 4 or 5), then do whatever you chose as the trigger. The screenshot lands in the message box, once per screenshot. The trigger can be:
-   - resting the pointer on the ChatGPT window (the default, no click),
+   - moving the pointer onto the ChatGPT window (the default, no click, no waiting),
    - a double-click or a triple-click in ChatGPT,
    - a keyboard shortcut you record (a mouse button set to send a keystroke works too).
 

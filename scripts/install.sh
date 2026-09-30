@@ -246,7 +246,7 @@ ONE permission to switch on (first install only):
   It is what lets Speedy Bot press Cmd+V and type for you. Updates keep the permission.
 
 What it does:
-  - Take a screenshot, rest the pointer on ChatGPT: the screenshot pastes itself into the message box.
+  - Take a screenshot, move the pointer onto ChatGPT: the screenshot pastes itself into the message box.
   - Cmd+Shift+V in a ScreenConnect session types your copied text into the remote machine. Esc stops it.
   - Optional: saves every screenshot under Documents > SpeedyBot Documentation, by incident number.
 While a screenshot feature is on, screenshots go to the clipboard instead of the Desktop.

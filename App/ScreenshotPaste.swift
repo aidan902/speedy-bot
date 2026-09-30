@@ -16,7 +16,7 @@ enum ScreenshotSource: Equatable {
 
 /// What makes a waiting screenshot go into ChatGPT.
 enum PasteTrigger: String, CaseIterable, Identifiable {
-    /// The pointer comes to rest on the ChatGPT window. No click, no key.
+    /// The pointer moves onto the ChatGPT window. No click, no key, no waiting.
     case hover
     /// A double-click, or a triple-click, anywhere in the ChatGPT window.
     case doubleClick, tripleClick
@@ -26,7 +26,7 @@ enum PasteTrigger: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .hover: return "Pointer rests on ChatGPT"
+        case .hover: return "Pointer moves onto ChatGPT"
         case .doubleClick: return "Double-click in ChatGPT"
         case .tripleClick: return "Triple-click in ChatGPT"
         case .shortcut: return "Keyboard shortcut"
@@ -35,8 +35,8 @@ enum PasteTrigger: String, CaseIterable, Identifiable {
 }
 
 /// Feature A: a fresh screenshot is pasted into ChatGPT, once per screenshot, when the tech's chosen trigger
-/// happens: the pointer coming back to rest on the ChatGPT window (the default), a double- or triple-click
-/// in it, or a keyboard shortcut.
+/// happens: the pointer coming back onto the ChatGPT window (the default), a double- or triple-click in it,
+/// or a keyboard shortcut.
 ///
 ///   a screenshot arrives (on the clipboard, or as a saved file) -> ARMED
 ///   the trigger happens -> bring ChatGPT forward, Cmd+V
@@ -58,7 +58,6 @@ final class ScreenshotPasteController {
     private var nextID = 1
     private var sawPointerElsewhere = false
     private var lastSeenOffChatGPT = Date.distantPast
-    private var lastPointer = CGPoint.zero
     private var dwellTicks = 0
     private var loggedOccluder = false
     private var pasting = false
@@ -86,11 +85,9 @@ final class ScreenshotPasteController {
     /// A screenshot older than this is never pasted. With the double-click rule on, an old screenshot cannot
     /// paste by accident, so it is kept ready for much longer.
     private var expiry: TimeInterval { hoverMaxAge == nil ? 180 : 1800 }
-    private let tick: TimeInterval = 0.1
-    /// The pointer has to REST on ChatGPT: this many ticks in a row, moving less than `restRadius` each tick.
-    /// Crossing the window on the way to something else does not count.
-    private let dwellNeeded = 3
-    private let restRadius: CGFloat = 16
+    private let tick: TimeInterval = 0.07
+    /// The paste fires as soon as the pointer is seen on ChatGPT (one tick), the moment it arrives.
+    private let dwellNeeded = 1
 
     init(state: AppState) { self.state = state }
 
@@ -338,8 +335,6 @@ final class ScreenshotPasteController {
 
         // Keep track of where the pointer has been whatever the trigger is: the next screenshot needs to know.
         let point = WindowHitTest.pointer()
-        let moved = hypot(point.x - lastPointer.x, point.y - lastPointer.y)
-        lastPointer = point
         guard let target = chatGPTUnderPointer(point) else {
             sawPointerElsewhere = true
             lastSeenOffChatGPT = Date()
@@ -351,9 +346,8 @@ final class ScreenshotPasteController {
         if let hoverMaxAge, Date().timeIntervalSince(armed.at) > hoverMaxAge { return }   // too old: double-click only
         // "Moves back to chat": the pointer must have been somewhere else since the screenshot was taken.
         guard sawPointerElsewhere else { return }
-        // Still moving, or dragging something across the window, is not "coming back to chat".
-        if moved > restRadius
-            || CGEventSource.buttonState(.hidSystemState, button: .left) || CGEventSource.buttonState(.hidSystemState, button: .right) {
+        // Dragging something across the window is not "coming back to chat".
+        if CGEventSource.buttonState(.hidSystemState, button: .left) || CGEventSource.buttonState(.hidSystemState, button: .right) {
             dwellTicks = 0
             return
         }
@@ -363,7 +357,7 @@ final class ScreenshotPasteController {
             dwellTicks = 0
             return
         }
-        SpeedyShared.log.notice("pointer came to rest on ChatGPT; pasting")
+        SpeedyShared.log.notice("pointer moved onto ChatGPT; pasting")
         paste(into: target.app, window: target.window, armed: armed, pointerMustStay: true)
     }
 

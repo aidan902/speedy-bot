@@ -157,7 +157,7 @@ struct MainView: View {
     private var pasteDetail: String {
         let how: String
         switch state.pasteTrigger {
-        case .hover: how = "rest the pointer on ChatGPT"
+        case .hover: how = "move the pointer onto ChatGPT"
         case .doubleClick: how = "double-click in ChatGPT"
         case .tripleClick: how = "triple-click in ChatGPT"
         case .shortcut: how = "press your shortcut"
@@ -186,7 +186,7 @@ struct MainView: View {
                     Spacer(minLength: 0)
                 }
                 if state.staleDoubleClick {
-                    Text("Resting the pointer pastes a fresh screenshot. One that has waited longer only pastes when you double-click in ChatGPT.")
+                    Text("Moving onto ChatGPT pastes a fresh screenshot. One that has waited longer only pastes when you double-click in ChatGPT.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
