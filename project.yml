@@ -1,0 +1,88 @@
+name: SpeedyBot
+options:
+  bundleIdPrefix: net.fm
+  createIntermediateGroups: true
+  deploymentTarget:
+    macOS: "13.0"
+settings:
+  base:
+    DEVELOPMENT_TEAM: SRPFLCC723
+    SB_BUNDLE_ID: net.fm.speedybot
+    # macOS-style app group: <TeamID>.<name>. Needs NO provisioning profile.
+    SB_GROUP_ID: "$(DEVELOPMENT_TEAM).$(SB_BUNDLE_ID)"
+    CODE_SIGN_STYLE: Manual
+    # scripts/build.sh passes the exact certificate (by SHA-1) on the command line; pass
+    # CODE_SIGN_IDENTITY=- for an ad-hoc local build when you have no Developer ID certificate.
+    CODE_SIGN_IDENTITY: "Developer ID Application"
+    PROVISIONING_PROFILE_SPECIFIER: ""
+    ENABLE_HARDENED_RUNTIME: YES
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    GENERATE_INFOPLIST_FILE: NO
+    # Xcode's plain `build` action injects com.apple.security.get-task-allow, which notarization rejects.
+    CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+    # Notarization needs a secure timestamp; Xcode passes --timestamp=none on a plain build otherwise.
+    OTHER_CODE_SIGN_FLAGS: "--timestamp"
+targets:
+  SpeedyBot:
+    type: application
+    platform: macOS
+    deploymentTarget: "13.0"
+    sources:
+      - App
+      - Engine
+      - Shared
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Speedy Bot
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        CFBundleIconFile: AppIcon
+        LSApplicationCategoryType: public.app-category.utilities
+        SBAppGroup: "$(SB_GROUP_ID)"
+        LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
+        NSPrincipalClass: NSApplication
+        NSHumanReadableCopyright: "FM"
+    entitlements:
+      path: App/SpeedyBot.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - "$(SB_GROUP_ID)"
+    settings:
+      base:
+        PRODUCT_NAME: Speedy Bot
+        PRODUCT_BUNDLE_IDENTIFIER: "$(SB_BUNDLE_ID)"
+    dependencies:
+      - target: SpeedyBotControls
+        embed: true
+        codeSign: false
+  SpeedyBotControls:
+    type: app-extension
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - Controls
+      - Shared
+    info:
+      path: Controls/Info.plist
+      properties:
+        CFBundleDisplayName: Speedy Bot
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
+        SBAppGroup: "$(SB_GROUP_ID)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    entitlements:
+      path: Controls/SpeedyBotControls.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.application-groups:
+          - "$(SB_GROUP_ID)"
+    settings:
+      base:
+        PRODUCT_NAME: SpeedyBotControls
+        PRODUCT_BUNDLE_IDENTIFIER: "$(SB_BUNDLE_ID).controls"
+        SKIP_INSTALL: YES

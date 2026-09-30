@@ -1,0 +1,54 @@
+import Foundation
+import os
+
+/// State shared between the (unsandboxed) app and the (sandboxed) Control Center extension.
+enum SpeedyShared {
+    /// macOS-style app group: <TeamID>.<anything>. Needs no provisioning profile.
+    /// Comes from Info.plist (SBAppGroup = $(SB_GROUP_ID)) so app, extension and entitlements can never disagree.
+    static let groupID = Bundle.main.object(forInfoDictionaryKey: "SBAppGroup") as? String ?? "SRPFLCC723.net.fm.speedybot"
+
+    /// Master switch. This is the one the Control Center control flips.
+    static let enabledKey = "enabled"
+    static let screenshotPasteKey = "screenshotPaste"
+    static let remoteTypingKey = "remoteTyping"
+    static let fastTypingKey = "fastTyping"
+    static let saveScreenshotsKey = "saveScreenshots"
+    static let incidentKey = "incident"
+    static let docsFolderKey = "docsFolder"
+    /// True while the app process is alive (set at launch, cleared on quit), so the control can show the truth.
+    static let appRunningKey = "appRunning"
+    static let appBundleID = "net.fm.speedybot"
+    /// Time stamp the control writes just before it starts the app, so that launch stays in the background.
+    static let quietLaunchKey = "quietLaunchAt"
+
+    /// Darwin notification posted by whichever side changes a value.
+    static let changedNotification = groupID + ".changed"
+    /// Posted by a second copy of the app so the running one shows its window.
+    static let showWindowNotification = groupID + ".showWindow"
+    /// Kind string of the Control Center control.
+    static let controlKind = "net.fm.speedybot.toggle"
+
+    static let log = Logger(subsystem: "net.fm.speedybot", category: "app")
+
+    static var defaults: UserDefaults {
+        UserDefaults(suiteName: groupID) ?? .standard
+    }
+
+    static func bool(_ key: String, default fallback: Bool) -> Bool {
+        defaults.object(forKey: key) as? Bool ?? fallback
+    }
+
+    static var isEnabled: Bool {
+        get { bool(enabledKey, default: true) }
+        set { defaults.set(newValue, forKey: enabledKey) }
+    }
+
+    static func post(_ name: String) {
+        CFNotificationCenterPostNotification(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            CFNotificationName(name as CFString),
+            nil, nil, true)
+    }
+
+    static func postChanged() { post(changedNotification) }
+}
