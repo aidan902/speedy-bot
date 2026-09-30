@@ -37,6 +37,20 @@ public enum WindowHitTest {
         return nil
     }
 
+    /// The frontmost ordinary window of a process, wherever the pointer is.
+    public static func frontWindow(ofPID pid: pid_t) -> WindowUnderPointer? {
+        guard let raw = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
+        for d in raw {
+            guard (d[kCGWindowOwnerPID as String] as? pid_t) == pid, (d[kCGWindowLayer as String] as? Int) == 0,
+                  (d[kCGWindowAlpha as String] as? Double ?? 1) > 0.01,
+                  let bd = d[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: bd),
+                  r.width >= 200, r.height >= 120 else { continue }
+            return WindowUnderPointer(windowID: (d[kCGWindowNumber as String] as? CGWindowID) ?? 0, ownerPID: pid,
+                                      ownerName: d[kCGWindowOwnerName as String] as? String ?? "", bounds: r)
+        }
+        return nil
+    }
+
     /// Is the pointer over a window of one of these bundle ids? Match by PID -> bundle id, not by owner name (names are localizable / reused).
     @MainActor public static func pointerIsOver(bundleIDs: Set<String>) -> (hit: Bool, window: WindowUnderPointer?) {
         guard let w = windowUnder() else { return (false, nil) }

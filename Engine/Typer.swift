@@ -100,14 +100,30 @@ public enum TextTyper {
         CGEventSource.flagsState(.hidSystemState).contains(.maskAlphaShift)
     }
 
-    /// Blocks (call OFF the main thread) until the hotkey's own Cmd+Shift and the V key are physically released.
-    /// Required for remote typing: the remote client has already seen the real Cmd/Shift go down, so typing before
-    /// they come up would turn every letter into a Win/Ctrl+Shift shortcut on the guest, whatever flags our events carry.
+    /// Blocks (call OFF the main thread) until the shortcut's own keys are up and have STAYED up for a moment.
+    /// Required for remote typing: the remote client has already seen Cmd/Shift go down, and it puts the Windows
+    /// key on every key it forwards until it has seen them come back up. Typing too early turns the first letters
+    /// into Win+letter shortcuts on the other end (the first character simply disappears).
+    /// Both the hardware state and the session state are checked: a mouse button mapped to a keystroke presses
+    /// the keys in software, which the hardware state never shows.
     public static func waitForPhysicalRelease(key: CGKeyCode = CGKeyCode(kVK_ANSI_V), timeout: TimeInterval = 3.0) -> Bool {
+        func keysUp() -> Bool {
+            for state in [CGEventSourceStateID.hidSystemState, .combinedSessionState] {
+                if !CGEventSource.flagsState(state).intersection(modifierMask).isEmpty { return false }
+                if CGEventSource.keyState(state, key: key) { return false }
+            }
+            return true
+        }
         let deadline = Date().addingTimeInterval(timeout)
+        var quietSince: Date?
         while Date() < deadline {
-            if !physicalModifiersDown() && !CGEventSource.keyState(.hidSystemState, key: key) { return true }
-            usleep(20_000)
+            if keysUp() {
+                if quietSince == nil { quietSince = Date() }
+                if Date().timeIntervalSince(quietSince!) >= 0.15 { return true }
+            } else {
+                quietSince = nil
+            }
+            usleep(15_000)
         }
         return false
     }

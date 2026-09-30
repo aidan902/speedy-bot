@@ -15,6 +15,17 @@ enum SpeedyShared {
     static let saveScreenshotsKey = "saveScreenshots"
     static let incidentKey = "incident"
     static let docsFolderKey = "docsFolder"
+    /// Leave the system's screenshot behaviour alone (saved file, corner preview) and pick the saved file up instead.
+    static let keepNormalScreenshotsKey = "keepNormalScreenshots"
+    /// What makes an armed screenshot paste into ChatGPT: "hover", "doubleClick", "tripleClick" or "shortcut".
+    static let pasteTriggerKey = "pasteTrigger"
+    /// "on", "off" or "auto" (only while a ScreenConnect session is open). `enabled` mirrors "not off" for the control.
+    static let modeKey = "mode"
+    /// In the pointer-rest mode: a screenshot older than this many seconds needs a double-click in ChatGPT instead.
+    static let staleDoubleClickKey = "staleDoubleClick"
+    static let staleAfterKey = "staleAfterSeconds"
+    /// One shortcut captures the whole ScreenConnect session window.
+    static let captureWindowKey = "captureWindow"
     /// True while the app process is alive (set at launch, cleared on quit), so the control can show the truth.
     static let appRunningKey = "appRunning"
     static let appBundleID = "net.fm.speedybot"

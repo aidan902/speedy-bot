@@ -6,9 +6,15 @@ A small Mac app for techs who live in ScreenConnect and ChatGPT. It removes thre
 
 ## What it does
 
-1. **Screenshots paste themselves into ChatGPT.** Take a screenshot (Cmd+Shift+3, 4 or 5), move the pointer onto the ChatGPT app and let it rest. The screenshot lands in the message box. One paste per screenshot, no click.
-2. **Cmd+Shift+V types into ScreenConnect.** In a remote session, Cmd+Shift+V types your copied text into the remote machine key by key. It works on login screens and prompts where paste does not. Esc stops it.
-3. **Screenshots filed by incident (optional).** Switch on "Save screenshots for documentation", give it the incident number, and every screenshot is also saved as
+1. **Screenshots paste themselves into ChatGPT.** Take a screenshot (Cmd+Shift+3, 4 or 5), then do whatever you chose as the trigger. The screenshot lands in the message box, once per screenshot. The trigger can be:
+   - resting the pointer on the ChatGPT window (the default, no click),
+   - a double-click or a triple-click in ChatGPT,
+   - a keyboard shortcut you record (a mouse button set to send a keystroke works too).
+
+   With the pointer trigger you can also set an age limit: a screenshot that has waited longer than, say, 30 seconds no longer pastes by itself and needs a double-click.
+2. **Cmd+Shift+V types into ScreenConnect.** In a remote session, the shortcut types your copied text into the remote machine key by key. It works on login screens and prompts where paste does not. Esc stops it. You can record a different shortcut.
+3. **Cmd+Shift+2 captures the ScreenConnect window.** One press takes a screenshot of the whole session window, no dragging, and handles it like any other screenshot. macOS asks for the Screen Recording permission the first time. You can record a different shortcut.
+4. **Screenshots filed by incident (optional).** Switch on "Save screenshots for documentation", give it the incident number, and every screenshot is also saved as
    `~/Documents/SpeedyBot Documentation/#INC - 12,345/#INC - 12,345 2026-09-30 at 11.04.12.png`.
 
 ## Install
@@ -31,7 +37,9 @@ Speedy Bot asks for one permission: **System Settings > Privacy & Security > Acc
 
 ## Turning things on and off
 
-- **The window.** Open Speedy Bot from Applications or the Dock. A master switch, one switch per feature, typing speed, the incident number, and "Open at login".
+Speedy Bot has three states: **Off**, **On**, and **Auto**. Auto means it only works while a ScreenConnect session is open, and leaves your Mac alone the rest of the time.
+
+- **The window.** Open Speedy Bot from Applications or the Dock. Off / On / Auto, one round switch per feature (blue is on), and the options under each.
 - **The menu bar icon** (a hare). The same switches.
 - **Control Center** (macOS 26 or later). Control Center > Edit Controls > add "Speedy Bot" for a one-tap on/off.
 
@@ -39,13 +47,15 @@ Closing the window leaves Speedy Bot working. Quit stops it.
 
 ## What changes on your Mac
 
-While either screenshot feature is on:
+By default, while a screenshot feature is on:
 
-- Cmd+Shift+3/4/5 put the picture on the **clipboard** instead of saving a file on the Desktop.
+- Cmd+Shift+3/4/5 put the picture on the **clipboard** instead of saving a file on the Desktop, so the paste is instant.
 - The floating thumbnail in the corner is switched off (it delays the screenshot by about five seconds).
 - Both settings go back to what you had when you switch the features off or quit Speedy Bot.
 - A screenshot on the clipboard also reaches your other Apple devices through Universal Clipboard.
 - A screenshot replaces whatever text you had copied. Copy the text again before Cmd+Shift+V.
+
+Tick **Also do my normal screenshot action** to change none of that. Screenshots then save where they always do and the corner thumbnail still pops up. Speedy Bot picks the saved file up instead, which means the paste waits until the file exists: about five seconds while the thumbnail is on. In this mode the clipboard is only borrowed for the paste and what you had copied is put back. macOS may ask once to let Speedy Bot see the folder your screenshots are saved in.
 
 ## Limits
 
@@ -82,6 +92,6 @@ That builds a universal Release app into `~/Library/Caches/speedy-bot-build`. Wi
 
 ## How it works
 
-- A screenshot sent to the clipboard is a single item of type `public.png`. Speedy Bot polls the clipboard's change counter (it does not read the contents), and when it sees that shape it waits for the pointer to come to rest on a ChatGPT window, brings that window forward and presses Cmd+V.
+- A screenshot sent to the clipboard is a single item of type `public.png`. Speedy Bot polls the clipboard's change counter (it does not read the contents), and when it sees that shape it waits for the trigger, brings the ChatGPT window forward and presses Cmd+V. In "normal screenshot action" mode it watches the screenshot folder for files carrying the system's screenshot tag instead.
 - Cmd+Shift+V is a system hotkey that is only registered while ScreenConnect is the front app, so the shortcut keeps its normal meaning everywhere else. The text is sent as real key presses using the current keyboard layout.
 - The log (`log show --predicate 'subsystem == "net.fm.speedybot"'`) records what happened, never clipboard contents or lengths.

@@ -1,4 +1,4 @@
-// Renders App/AppIcon.icns: a white hare on a rounded gradient tile.   swift scripts/make-icon.swift
+// Renders App/AppIcon.icns: a white hare on a rounded FM-green tile.   swift scripts/make-icon.swift
 import AppKit
 
 func render(_ px: Int) -> Data {
@@ -10,7 +10,9 @@ func render(_ px: Int) -> Data {
     let inset = s * 0.1
     let tile = NSRect(x: inset, y: inset, width: s - 2 * inset, height: s - 2 * inset)
     let path = NSBezierPath(roundedRect: tile, xRadius: tile.width * 0.225, yRadius: tile.width * 0.225)
-    NSGradient(colors: [NSColor(red: 1.0, green: 0.62, blue: 0.20, alpha: 1), NSColor(red: 0.96, green: 0.30, blue: 0.22, alpha: 1)])!
+    // FM green (#2DD464) down to a deeper green.
+    NSGradient(colors: [NSColor(red: 0x2D / 255.0, green: 0xD4 / 255.0, blue: 0x64 / 255.0, alpha: 1),
+                        NSColor(red: 0.07, green: 0.62, blue: 0.27, alpha: 1)])!
         .draw(in: path, angle: -90)
     let cfg = NSImage.SymbolConfiguration(pointSize: tile.width * 0.5, weight: .semibold)
         .applying(NSImage.SymbolConfiguration(paletteColors: [.white]))

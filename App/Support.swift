@@ -54,6 +54,32 @@ enum ScreencapturePrefs {
 
     static var isApplied: Bool { SpeedyShared.defaults.object(forKey: savedKey) != nil }
 
+    // The tech's own settings, for when Speedy Bot leaves the screenshot behaviour as it is.
+
+    /// Where the system saves screenshot files.
+    static var screenshotFolder: URL {
+        sync()
+        for key in ["location-screenshot", "location"] {
+            if let s = get(key) as? String, !s.isEmpty {
+                return URL(fileURLWithPath: (s as NSString).expandingTildeInPath, isDirectory: true)
+            }
+        }
+        return FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Desktop", isDirectory: true)
+    }
+
+    /// The tech has pointed screenshots at the clipboard themselves.
+    static var sendsToClipboard: Bool {
+        sync()
+        return (get("target-screenshot") as? String ?? get("target") as? String) == "clipboard"
+    }
+
+    /// The floating preview in the corner. While it shows (about five seconds) the file is not saved yet.
+    static var thumbnailOn: Bool {
+        sync()
+        return (get("show-thumbnail") as? Bool) ?? true
+    }
+
     static func applyClipboardMode() {
         sync()
         let d = SpeedyShared.defaults

@@ -58,6 +58,7 @@ final class RemoteTypingController {
     private unowned let state: AppState
     private var gate: FrontmostAppGate?
     private var hotKeyCode = CGKeyCode(kVK_ANSI_V)
+    private var hotKeyModifiers = cmdKey | shiftKey
     private var escKey: GlobalHotKey?
     private var observers: [NSObjectProtocol] = []
     private var enabled = false
@@ -104,16 +105,25 @@ final class RemoteTypingController {
         })
     }
 
-    /// (Re)creates the Cmd+Shift+V shortcut on the key that means V while Command is held on the current layout.
+    /// (Re)creates the shortcut: the tech's own if they recorded one, otherwise Cmd+Shift+V on the key that
+    /// means V while Command is held on the current layout.
     private func registerHotKey() {
-        let code = LayoutKeyMap.keyCodeWithCommand(for: "v") ?? CGKeyCode(kVK_ANSI_V)
-        if gate != nil, code == hotKeyCode { return }
+        let custom = state.typingShortcut
+        let code = custom.map { CGKeyCode($0.keyCode) } ?? LayoutKeyMap.keyCodeWithCommand(for: "v") ?? CGKeyCode(kVK_ANSI_V)
+        let mods = custom?.carbonModifiers ?? (cmdKey | shiftKey)
+        if gate != nil, code == hotKeyCode, mods == hotKeyModifiers { return }
         gate?.stop()
         hotKeyCode = code
-        let hk = GlobalHotKey(keyCode: Int(code), carbonModifiers: cmdKey | shiftKey) { [weak self] in self?.fire() }
+        hotKeyModifiers = mods
+        let hk = GlobalHotKey(keyCode: Int(code), carbonModifiers: mods) { [weak self] in self?.fire() }
         let g = FrontmostAppGate(hotKey: hk, matches: FrontmostAppGate.isScreenConnect)
         g.enabled = enabled
         gate = g
+    }
+
+    /// The tech recorded a different shortcut (or went back to the standard one).
+    func shortcutChanged() {
+        if gate != nil { registerHotKey() }
     }
 
     // MARK: the shortcut
@@ -145,7 +155,7 @@ final class RemoteTypingController {
             return
         }
         if TextTyper.capsLockOn {
-            Toast.show("Caps Lock is on. Turn it off and press ⌘⇧V again", seconds: 3)
+            Toast.show("Caps Lock is on. Turn it off and press \(state.typingShortcutLabel) again", seconds: 3)
             return
         }
         guard let keyMap = LayoutKeyMap.current() else {
@@ -171,7 +181,7 @@ final class RemoteTypingController {
             } else {
                 pendingConfirm = (pb.changeCount, Date().addingTimeInterval(5))
                 let lines = text.split(separator: "\n", omittingEmptySubsequences: false).count
-                Toast.show("Press ⌘⇧V again to type \(text.count) characters (\(lines) line\(lines == 1 ? "" : "s"))", seconds: 4)
+                Toast.show("Press \(state.typingShortcutLabel) again to type \(text.count) characters (\(lines) line\(lines == 1 ? "" : "s"))", seconds: 4)
                 return
             }
         }
@@ -196,7 +206,7 @@ final class RemoteTypingController {
             let released = TextTyper.waitForPhysicalRelease(key: hotKeyCode, timeout: 3.0)
             var posted = 0
             if released {
-                usleep(80_000)   // let the key-ups reach the remote first
+                usleep(120_000)   // let the key-ups reach the remote first
                 posted = TextTyper.post(plan, options: options) {
                     cancelled.get() || !sessionInFront.get() || TextTyper.physicalCommandKeysDown() || !focus.stillFocused()
                 }
@@ -216,7 +226,7 @@ final class RemoteTypingController {
         let outcome = !released ? "modifiers still held" : posted < total ? "stopped early" : "complete"
         SpeedyShared.log.notice("typing finished: \(outcome, privacy: .public)")
         if !released {
-            Toast.show("Let go of ⌘ and ⇧, then press ⌘⇧V again", seconds: 3)
+            Toast.show("Let go of the keys, then press \(state.typingShortcutLabel) again", seconds: 3)
         } else if posted < total {
             Toast.show("Typing stopped", seconds: 2)
         }

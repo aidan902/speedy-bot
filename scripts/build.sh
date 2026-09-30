@@ -26,7 +26,7 @@ xcodegen generate --quiet
 
 xcodebuild -project SpeedyBot.xcodeproj -scheme SpeedyBot -configuration Release \
   -derivedDataPath "$OUT" -destination 'generic/platform=macOS' \
-  CODE_SIGN_IDENTITY="$SIGN_ID" build | grep -E "error:|warning: |BUILD" | grep -v appintentsmetadataprocessor || true
+  CODE_SIGN_IDENTITY="$SIGN_ID" build 2>&1 | grep -E "\.swift:[0-9]+:[0-9]+: (error|warning)|^error:|BUILD (SUCCEEDED|FAILED)" | sort -u || true
 
 APP="$OUT/Build/Products/Release/Speedy Bot.app"
 [ -d "$APP" ] || { echo "Build failed." >&2; exit 1; }
