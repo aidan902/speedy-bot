@@ -105,6 +105,7 @@ final class AppState: ObservableObject {
     @Published var typing = false
 
     var showWindow: (() -> Void)?
+    var showSetup: (() -> Void)?
 
     private lazy var screenshot = ScreenshotPasteController(state: self)
     private lazy var typer = RemoteTypingController(state: self)
@@ -115,7 +116,7 @@ final class AppState: ObservableObject {
 
     init() {
         mode = Self.storedMode()
-        staleDoubleClick = SpeedyShared.bool(SpeedyShared.staleDoubleClickKey, default: false)
+        staleDoubleClick = SpeedyShared.bool(SpeedyShared.staleDoubleClickKey, default: true)
         staleAfterSeconds = min(max(SpeedyShared.defaults.object(forKey: SpeedyShared.staleAfterKey) as? Int ?? 30, 1), 1800)
         captureWindow = SpeedyShared.bool(SpeedyShared.captureWindowKey, default: true)
         captureShortcut = HotKeySpec.load(.capture).flatMap { $0.leavesBareModifierTapOnRemote ? nil : $0 }
@@ -124,9 +125,9 @@ final class AppState: ObservableObject {
         betaUpdates = SpeedyShared.bool(SpeedyShared.betaUpdatesKey, default: !Updater.runningCopyIsNotarized)
         screenshotPaste = SpeedyShared.bool(SpeedyShared.screenshotPasteKey, default: true)
         remoteTyping = SpeedyShared.bool(SpeedyShared.remoteTypingKey, default: true)
-        fastTyping = SpeedyShared.bool(SpeedyShared.fastTypingKey, default: false)
+        fastTyping = SpeedyShared.bool(SpeedyShared.fastTypingKey, default: true)
         saveScreenshots = SpeedyShared.bool(SpeedyShared.saveScreenshotsKey, default: false)
-        keepNormalScreenshots = SpeedyShared.bool(SpeedyShared.keepNormalScreenshotsKey, default: false)
+        keepNormalScreenshots = SpeedyShared.bool(SpeedyShared.keepNormalScreenshotsKey, default: true)
         pasteTrigger = SpeedyShared.defaults.string(forKey: SpeedyShared.pasteTriggerKey).flatMap(PasteTrigger.init(rawValue:)) ?? .hover
         pasteShortcut = HotKeySpec.load(.paste)
         let storedTargets = (SpeedyShared.defaults.stringArray(forKey: SpeedyShared.pasteTargetsKey) ?? []).compactMap(PasteTarget.init(rawValue:))
@@ -201,9 +202,9 @@ final class AppState: ObservableObject {
         mode = Self.storedMode()
         screenshotPaste = SpeedyShared.bool(SpeedyShared.screenshotPasteKey, default: true)
         remoteTyping = SpeedyShared.bool(SpeedyShared.remoteTypingKey, default: true)
-        fastTyping = SpeedyShared.bool(SpeedyShared.fastTypingKey, default: false)
+        fastTyping = SpeedyShared.bool(SpeedyShared.fastTypingKey, default: true)
         saveScreenshots = SpeedyShared.bool(SpeedyShared.saveScreenshotsKey, default: false)
-        keepNormalScreenshots = SpeedyShared.bool(SpeedyShared.keepNormalScreenshotsKey, default: false)
+        keepNormalScreenshots = SpeedyShared.bool(SpeedyShared.keepNormalScreenshotsKey, default: true)
         pasteTrigger = SpeedyShared.defaults.string(forKey: SpeedyShared.pasteTriggerKey).flatMap(PasteTrigger.init(rawValue:)) ?? .hover
         reloading = false
         apply()

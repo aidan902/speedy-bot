@@ -10,6 +10,8 @@ enum MainMenu {
         appMenu.addItem(withTitle: "About Speedy Bot", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         let update = appMenu.addItem(withTitle: "Check for Updates…", action: #selector(AppDelegate.checkForUpdates(_:)), keyEquivalent: "")
         update.target = target
+        let setup = appMenu.addItem(withTitle: "Set Up Permissions…", action: #selector(AppDelegate.setUpPermissions(_:)), keyEquivalent: "")
+        setup.target = target
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide Speedy Bot", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         let others = appMenu.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")

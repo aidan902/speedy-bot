@@ -1,10 +1,12 @@
 import AppKit
+import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let state = AppState()
     private var statusItem: StatusItemController?
     private var window: MainWindowController?
+    private var setup: SetupWindowController?
     private var observers: [DarwinObserver] = []
     private var isSecondCopy = false
 
@@ -55,6 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let window = MainWindowController(state: state)
         self.window = window
         state.showWindow = { [weak window] in window?.show() }
+        state.showSetup = { [weak self] in self?.showSetup(askImmediately: false) }
         statusItem = StatusItemController(state: state)
         observers = [
             DarwinObserver(name: SpeedyShared.changedNotification) { [weak self] in self?.state.reloadFromStore() },
@@ -66,8 +69,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let quietStamp = SpeedyShared.defaults.double(forKey: SpeedyShared.quietLaunchKey)
         let launchedByControl = abs(Date().timeIntervalSince1970 - quietStamp) < 15
         SpeedyShared.defaults.removeObject(forKey: SpeedyShared.quietLaunchKey)
-        if !(launchedAtLogin || launchedByControl) || !Permissions.accessibilityTrusted { window.show() }
+        if !SpeedyShared.bool(SpeedyShared.setupDoneKey, default: false) {
+            showSetup(askImmediately: true)   // first run: which chat app, and every permission, right away
+        } else if !(launchedAtLogin || launchedByControl) || !Permissions.accessibilityTrusted {
+            window.show()
+        }
     }
+
+    func showSetup(askImmediately: Bool) {
+        if setup == nil {
+            setup = SetupWindowController(state: state) { [weak self] in
+                SpeedyShared.defaults.set(true, forKey: SpeedyShared.setupDoneKey)
+                self?.setup?.close()
+                self?.window?.show()
+            }
+        }
+        setup?.show(askImmediately: askImmediately)
+    }
+
+    @objc func setUpPermissions(_ sender: Any?) { showSetup(askImmediately: false) }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         window?.show()
@@ -100,6 +120,21 @@ if CommandLine.arguments.contains("--selftest") {
 if CommandLine.arguments.contains("--restore-screenshot-settings") {
     ScreencapturePrefs.restore()
     exit(0)
+}
+
+// `--snapshot-setup <file.png>`: the same for the first-run setup window.
+if let i = CommandLine.arguments.firstIndex(of: "--snapshot-setup"), CommandLine.arguments.count > i + 1 {
+    _ = NSApplication.shared
+    let host = NSHostingView(rootView: SetupView(state: AppState(), status: SetupStatus(), onDone: {}).background(Color(nsColor: .windowBackgroundColor)))
+    let window = NSWindow(contentRect: NSRect(origin: .zero, size: host.fittingSize), styleMask: [.titled], backing: .buffered, defer: false)
+    window.contentView = host
+    host.layoutSubtreeIfNeeded()
+    var ok = false
+    if let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+        host.cacheDisplay(in: host.bounds, to: rep)
+        ok = (try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: CommandLine.arguments[i + 1]))) != nil
+    }
+    exit(ok ? 0 : 1)
 }
 
 // `--snapshot <file.png>`: draw the window's contents to a picture without showing it (for the README and checks).

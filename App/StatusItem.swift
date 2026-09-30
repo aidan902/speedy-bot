@@ -61,11 +61,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             menu.addItem(action("Incident: " + (state.incident.isEmpty ? "not set" : state.incident) + "…", #selector(incident)))
             menu.addItem(action("Open Documentation Folder", #selector(openDocs)))
         }
-        if !state.accessibilityGranted {
-            menu.addItem(.separator())
-            menu.addItem(action("Grant Accessibility Permission…", #selector(grant)))
-        }
         menu.addItem(.separator())
+        menu.addItem(action(state.accessibilityGranted ? "Set Up Permissions…" : "Grant Accessibility Permission…", #selector(setup)))
         menu.addItem(action("Check for Updates…", #selector(checkUpdates)))
         menu.addItem(action("Open Speedy Bot…", #selector(open)))
         menu.addItem(action("Quit Speedy Bot", #selector(quit), key: "q"))
@@ -140,7 +137,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func toggleSave() { state.saveScreenshots.toggle() }
     @objc private func incident() { state.askForIncident() }
     @objc private func openDocs() { state.openDocsFolder() }
-    @objc private func grant() { state.requestAccessibility() }
+    @objc private func setup() { state.showSetup?() }
     @objc private func checkUpdates() { state.showWindow?(); state.updater.check(userAsked: true) }
     @objc private func open() { state.showWindow?() }
     @objc private func quit() { NSApp.terminate(nil) }

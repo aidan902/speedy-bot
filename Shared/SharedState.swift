@@ -21,6 +21,8 @@ enum SpeedyShared {
     static let pasteTriggerKey = "pasteTrigger"
     /// Which chat apps a screenshot may be pasted into ("chatGPT", "claude", "grok").
     static let pasteTargetsKey = "pasteTargets"
+    /// The first-run setup window has been dismissed.
+    static let setupDoneKey = "setupDone"
     /// "on", "off" or "auto" (only while a ScreenConnect session is open). `enabled` mirrors "not off" for the control.
     static let modeKey = "mode"
     /// In the pointer-rest mode: a screenshot older than this many seconds needs a double-click in ChatGPT instead.

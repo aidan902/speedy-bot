@@ -31,7 +31,9 @@ Needs macOS 13 or later. Runs on Intel and Apple silicon.
 
 ## First run
 
-Speedy Bot asks for one permission: **System Settings > Privacy & Security > Accessibility > Speedy Bot**. That is what lets it press Cmd+V and type for you. On a standard account macOS asks for an admin password to switch it on.
+The first time it opens, Speedy Bot asks which chat app you use and puts up every permission it will need, one after another: **Accessibility** (to press ⌘V and type for you), **Screen Recording** (for the one-press window capture), and your **screenshot folder** and **Documents** folder. Blue means done. Accessibility ends in System Settings, where you switch Speedy Bot on; on a standard account macOS asks for an admin password.
+
+You can come back to that window any time from the menu bar icon > Set Up Permissions…
 
 ## Turning things on and off
 
