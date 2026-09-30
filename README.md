@@ -2,7 +2,7 @@
 
 A small Mac app for techs who live in ScreenConnect and ChatGPT. It removes three bits of repeated hand work.
 
-> **Beta.** The build on the [Releases page](https://github.com/aidan902/speedy-bot/releases) is signed but not yet notarized by Apple, so macOS blocks it the first time you open it. After trying to open it, go to System Settings > Privacy & Security and click **Open Anyway**. This note goes away with the first notarized release.
+> **Beta.** The builds on the [Releases page](https://github.com/aidan902/speedy-bot/releases) are signed but not yet notarized by Apple, so macOS blocks the app the first time you open it. After trying to open it, go to System Settings > Privacy & Security and click **Open Anyway**. This note goes away with the first notarized release.
 
 ## What it does
 
@@ -68,7 +68,9 @@ Tick **Also do my normal screenshot action** to change none of that. Screenshots
 
 ## Update
 
-Run the install command again, or replace the app in Applications with the new one. The Accessibility permission carries over.
+Speedy Bot updates itself. It checks for a newer version shortly after it opens and a few times a day, downloads it, checks that it is a genuine build (intact signature, same developer, a higher build number, and notarized if the copy you run is), then swaps itself and reopens. The Accessibility permission carries over.
+
+At the bottom of the window you can switch this off, choose whether beta versions count, or press **Check Now**. With automatic updates off, run the install command again or replace the app in Applications.
 
 ## Uninstall
 
@@ -88,7 +90,7 @@ scripts/build.sh --adhoc
 
 That builds a universal Release app into `~/Library/Caches/speedy-bot-build`. Without `--adhoc` it signs with the Developer ID certificate for the team in `project.yml`. Do not build inside an iCloud-synced folder: the sync adds file attributes that make code signing fail, which is why the build goes to `~/Library/Caches`.
 
-`scripts/release.sh "<path to Speedy Bot.app>" --notarize` signs, notarizes and packages a release (zip and disk image). `scripts/make-icon.swift` regenerates the app icon.
+`scripts/release.sh "<path to Speedy Bot.app>" --notarize` signs, notarizes and packages a release: a zip, a disk image and `SpeedyBot-update.json`. Attach all three and `scripts/install.sh` to a GitHub release; installed copies find it through the update file. Raise `CURRENT_PROJECT_VERSION` in `project.yml` for every release, because the updater compares build numbers. `scripts/make-icon.swift` regenerates the app icon.
 
 ## How it works
 
