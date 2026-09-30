@@ -96,9 +96,10 @@ struct MainView: View {
                 Text(note).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
 
+            UpdateRow(state: state, updater: state.updater)
+
             HStack {
-                Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?")")
-                    .font(.caption).foregroundStyle(.tertiary)
+                Text("Version \(Updater.currentVersion)").font(.caption).foregroundStyle(.tertiary)
                 Spacer()
                 Button("Quit Speedy Bot") { NSApp.terminate(nil) }.controlSize(.small)
             }
@@ -238,6 +239,31 @@ struct MainView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading).padding(.leading, inset).padding(.trailing, 12).padding(.bottom, 12)
+    }
+}
+
+/// Automatic updates: on/off, beta versions, a manual check, and what the updater last found.
+private struct UpdateRow: View {
+    @ObservedObject var state: AppState
+    @ObservedObject var updater: Updater
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                RoundToggle(symbol: "checkmark", label: "Update automatically", isOn: $state.autoUpdate, size: 22, emptyWhenOff: true)
+                Text("Update automatically")
+                Spacer()
+                Button("Check Now") { updater.check(userAsked: true) }.controlSize(.small)
+            }
+            HStack(spacing: 10) {
+                RoundToggle(symbol: "checkmark", label: "Include beta versions", isOn: $state.betaUpdates, size: 22, emptyWhenOff: true)
+                Text("Include beta versions")
+                Spacer()
+            }
+            if !updater.status.isEmpty {
+                Text(updater.status).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 }
 

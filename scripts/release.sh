@@ -365,6 +365,13 @@ verify_as_delivered() {   # <zip> <dmg>
   note "zip and disk image both contain an intact app signed by team $TEAM_ID"
 }
 
+# What the app's updater reads: which build this is and which zip to fetch.
+BUILD_NUMBER="$($PB -c 'Print :CFBundleVersion' "$APP_SRC/Contents/Info.plist" 2>/dev/null || echo 0)"
+write_update_info() {   # <zip>
+  printf '{"version": "%s", "build": %s, "zip": "%s", "minimumSystemVersion": "%s"}\n' \
+    "$VERSION" "$BUILD_NUMBER" "$(basename "$1")" "$MIN_OS" >"$OUT/$ZIP_BASENAME-update.json"
+}
+
 write_sums() { local f; for f in "$@"; do ( cd "$(dirname "$f")" && shasum -a 256 "$(basename "$f")" >"$(basename "$f").sha256" ); done; }
 
 if [ "$NOTARIZE" != 1 ]; then
@@ -377,11 +384,13 @@ if [ "$NOTARIZE" != 1 ]; then
   say "verify what would be delivered"
   verify_as_delivered "$ZIP" "$DMG"
   write_sums "$ZIP" "$DMG"
+  write_update_info "$ZIP"
   cat <<EOF
 
 OK: signed + verified (Developer ID, hardened runtime) — NOT notarized.
   zip        : $ZIP
   disk image : $DMG
+  update info: $OUT/$ZIP_BASENAME-update.json   (attach it to the release so installed copies update themselves)
   Downloaded through a browser these are blocked by Gatekeeper on first open
   (System Settings > Privacy & Security > Open Anyway gets past it).
   To make a release anyone can open:   "$0" "$APP_SRC" --notarize
@@ -424,6 +433,7 @@ verify_as_delivered "$ZIP" "$DMG"
 cp "$ZIP" "$LATEST_ZIP"
 cp "$DMG" "$LATEST_DMG"
 write_sums "$ZIP" "$LATEST_ZIP" "$DMG" "$LATEST_DMG"
+write_update_info "$LATEST_ZIP"
 
 cat <<EOF
 
@@ -431,5 +441,6 @@ OK: Speedy Bot $VERSION is signed, notarized and stapled.
   disk image : $LATEST_DMG      (and $(basename "$DMG"))
   zip        : $LATEST_ZIP      (and $(basename "$ZIP"); the installer downloads this one)
   NOT PUBLISHED: this script uploads nothing but the notarization requests.
-  Next: attach $(basename "$LATEST_DMG"), $(basename "$LATEST_ZIP") and scripts/install.sh to a GitHub release.
+  Next: attach $(basename "$LATEST_DMG"), $(basename "$LATEST_ZIP"), $ZIP_BASENAME-update.json and scripts/install.sh
+  to a GitHub release. Installed copies update themselves from $ZIP_BASENAME-update.json.
 EOF

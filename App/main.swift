@@ -79,6 +79,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func showMainWindow(_ sender: Any?) { window?.show() }
 
+    @objc func checkForUpdates(_ sender: Any?) {
+        window?.show()   // the result appears at the bottom of the window
+        state.updater.check(userAsked: true)
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         if !isSecondCopy { state.shutdown() }
     }

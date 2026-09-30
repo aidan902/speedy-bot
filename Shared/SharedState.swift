@@ -26,6 +26,11 @@ enum SpeedyShared {
     static let staleAfterKey = "staleAfterSeconds"
     /// One shortcut captures the whole ScreenConnect session window.
     static let captureWindowKey = "captureWindow"
+    /// Install new versions by themselves; and whether beta versions count.
+    static let autoUpdateKey = "autoUpdate"
+    static let betaUpdatesKey = "betaUpdates"
+    /// Set just before an update relaunches the app, so the new copy can say it was updated.
+    static let updatedToKey = "updatedTo"
     /// True while the app process is alive (set at launch, cleared on quit), so the control can show the truth.
     static let appRunningKey = "appRunning"
     static let appBundleID = "net.fm.speedybot"

@@ -66,6 +66,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             menu.addItem(action("Grant Accessibility Permission…", #selector(grant)))
         }
         menu.addItem(.separator())
+        menu.addItem(action("Check for Updates…", #selector(checkUpdates)))
         menu.addItem(action("Open Speedy Bot…", #selector(open)))
         menu.addItem(action("Quit Speedy Bot", #selector(quit), key: "q"))
     }
@@ -92,6 +93,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func incident() { state.askForIncident() }
     @objc private func openDocs() { state.openDocsFolder() }
     @objc private func grant() { state.requestAccessibility() }
+    @objc private func checkUpdates() { state.showWindow?(); state.updater.check(userAsked: true) }
     @objc private func open() { state.showWindow?() }
     @objc private func quit() { NSApp.terminate(nil) }
 }

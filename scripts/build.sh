@@ -24,9 +24,16 @@ fi
 command -v xcodegen >/dev/null || { echo "xcodegen is needed: brew install xcodegen" >&2; exit 1; }
 xcodegen generate --quiet
 
-xcodebuild -project SpeedyBot.xcodeproj -scheme SpeedyBot -configuration Release \
-  -derivedDataPath "$OUT" -destination 'generic/platform=macOS' \
-  CODE_SIGN_IDENTITY="$SIGN_ID" build 2>&1 | grep -E "\.swift:[0-9]+:[0-9]+: (error|warning)|^error:|BUILD (SUCCEEDED|FAILED)" | sort -u || true
+LOG="$(mktemp "${TMPDIR:-/tmp}/speedybot-build.XXXXXX")"
+if ! xcodebuild -project SpeedyBot.xcodeproj -scheme SpeedyBot -configuration Release \
+     -derivedDataPath "$OUT" -destination 'generic/platform=macOS' \
+     CODE_SIGN_IDENTITY="$SIGN_ID" build >"$LOG" 2>&1; then
+  grep -E "\.swift:[0-9]+:[0-9]+: error|^error:|BUILD FAILED" "$LOG" | sort -u >&2
+  echo "Build failed. Full log: $LOG" >&2
+  exit 1
+fi
+grep -E "\.swift:[0-9]+:[0-9]+: warning" "$LOG" | sort -u || true
+rm -f "$LOG"
 
 APP="$OUT/Build/Products/Release/Speedy Bot.app"
 [ -d "$APP" ] || { echo "Build failed." >&2; exit 1; }

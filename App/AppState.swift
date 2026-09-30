@@ -62,6 +62,10 @@ final class AppState: ObservableObject {
     }
     /// One shortcut captures the whole ScreenConnect session window.
     @Published var captureWindow: Bool { didSet { changed(SpeedyShared.captureWindowKey, captureWindow) } }
+    /// Install new versions automatically, and whether beta versions count as new versions.
+    @Published var autoUpdate: Bool { didSet { changed(SpeedyShared.autoUpdateKey, autoUpdate) } }
+    @Published var betaUpdates: Bool { didSet { changed(SpeedyShared.betaUpdatesKey, betaUpdates) } }
+    private(set) lazy var updater = Updater(state: self)
     /// The tech's own shortcut for that capture (nil = the standard ⌘⇧2).
     @Published private(set) var captureShortcut: HotKeySpec?
     /// The shortcut for the keyboard-shortcut paste trigger (nil until the tech records one).
@@ -97,6 +101,9 @@ final class AppState: ObservableObject {
         staleAfterSeconds = max(1, SpeedyShared.defaults.object(forKey: SpeedyShared.staleAfterKey) as? Int ?? 30)
         captureWindow = SpeedyShared.bool(SpeedyShared.captureWindowKey, default: true)
         captureShortcut = HotKeySpec.load(.capture)
+        autoUpdate = SpeedyShared.bool(SpeedyShared.autoUpdateKey, default: true)
+        // Someone running a build Apple has not notarized is a beta tester; a notarized install stays on full releases.
+        betaUpdates = SpeedyShared.bool(SpeedyShared.betaUpdatesKey, default: !Updater.runningCopyIsNotarized)
         screenshotPaste = SpeedyShared.bool(SpeedyShared.screenshotPasteKey, default: true)
         remoteTyping = SpeedyShared.bool(SpeedyShared.remoteTypingKey, default: true)
         fastTyping = SpeedyShared.bool(SpeedyShared.fastTypingKey, default: false)
@@ -146,6 +153,7 @@ final class AppState: ObservableObject {
         t.tolerance = 0.5
         RunLoop.main.add(t, forMode: .common)
         permissionTimer = t
+        updater.start()
     }
 
     /// Put the Mac back the way it was: the screenshot settings return to the tech's own values.
