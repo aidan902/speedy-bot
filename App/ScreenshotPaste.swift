@@ -73,8 +73,13 @@ final class ScreenshotPasteController {
     var hoverMaxAge: TimeInterval? { didSet { syncTriggers() } }
     private var clickMonitor: Any?
     private var hotKey: GlobalHotKey?
-    /// A click trigger that came before the screenshot's file was saved (the corner preview holds it back).
-    private var earlyClick: Date?
+    /// The system's corner preview is showing: a screenshot has been taken whose file is not saved yet.
+    private var capturePending = false
+    /// A click or shortcut trigger that came while that file was still on its way.
+    private var earlyTrigger: (at: Date, byShortcut: Bool)?
+    /// What the tech had on the clipboard before a saved screenshot was put there for pasting.
+    private var borrow: (snapshot: ClipboardSnapshot, count: Int, token: Int)?
+    private var nextBorrowToken = 1
     /// Called for every screenshot that arrives, before it is armed for pasting.
     var onScreenshot: ((ScreenshotRef) -> Void)?
 
@@ -92,7 +97,7 @@ final class ScreenshotPasteController {
     /// Starts (or switches to) a source. False when a screenshot folder cannot be watched.
     @discardableResult
     func start(source wanted: ScreenshotSource) -> Bool {
-        if source == wanted { return true }
+        if source == wanted, isHealthy { return true }
         stop()
         switch wanted {
         case .clipboard:
@@ -119,15 +124,39 @@ final class ScreenshotPasteController {
         clipboardWatcher.stop()
         folderWatcher.stop()
         pointerTimer?.invalidate(); pointerTimer = nil
+        capturePending = false
+        earlyTrigger = nil
         disarm("stopped")
+        returnBorrowedClipboard()
         syncTriggers()
+    }
+
+    /// False when the watched screenshot folder has gone away (renamed, deleted, unmounted) and must be found again.
+    var isHealthy: Bool {
+        if case .folder = source { return folderWatcher.isAlive }
+        return source != nil
+    }
+
+    /// Whether the corner preview holds new screenshot files back (only relevant when watching a folder).
+    private var previewDelaysFiles: Bool {
+        if case .folder = source { return ScreencapturePrefs.thumbnailOn }
+        return false
+    }
+
+    private func samplePointer() {
+        if previewDelaysFiles {
+            let pending = WindowHitTest.screenshotPreviewVisible()
+            if pending != capturePending { capturePending = pending; syncTriggers() }
+        }
+        guard pasteEnabled, armed == nil else { return }   // while armed the hover timer keeps this up to date
+        if chatGPTUnderPointer() == nil { lastSeenOffChatGPT = Date() }
     }
 
     // MARK: triggers
 
     /// Clicks are only listened for, and the shortcut only claimed, while they can mean something: the click
-    /// listener while pasting is on with a click trigger, the shortcut only while a screenshot is waiting (so the
-    /// key combination keeps its normal meaning the rest of the time).
+    /// listener while pasting is on with a click trigger, the shortcut only while a screenshot is waiting or on
+    /// its way (so the key combination keeps its normal meaning the rest of the time).
     private func syncTriggers() {
         let wantClicks = source != nil && pasteEnabled
             && (trigger == .doubleClick || trigger == .tripleClick || (trigger == .hover && hoverMaxAge != nil))
@@ -139,44 +168,65 @@ final class ScreenshotPasteController {
         } else if !wantClicks, let monitor = clickMonitor {
             NSEvent.removeMonitor(monitor)
             clickMonitor = nil
-            earlyClick = nil
         }
 
-        let wantKey = armed != nil && pasteEnabled && trigger == .shortcut && shortcut != nil
+        let wantKey = (armed != nil || capturePending) && pasteEnabled && trigger == .shortcut && shortcut != nil
         if wantKey {
             if hotKey == nil, let shortcut {
                 hotKey = GlobalHotKey(keyCode: shortcut.keyCode, carbonModifiers: shortcut.carbonModifiers) { [weak self] in self?.shortcutPressed() }
             }
-            hotKey?.register()
+            if hotKey?.register() != noErr {
+                SpeedyShared.log.error("the paste shortcut could not be registered (already taken?)")
+            }
         } else {
             hotKey?.unregister()
         }
     }
 
+    /// A screenshot has been taken whose file is not there yet: a trigger now is meant for THAT screenshot,
+    /// not for an older one that happens to be still waiting.
+    private func noteEarlyTrigger(byShortcut: Bool) -> Bool {
+        guard previewDelaysFiles, capturePending || armed == nil else { return false }
+        earlyTrigger = (Date(), byShortcut)
+        return true
+    }
+
     private func clicked(count: Int) {
-        guard count == (trigger == .tripleClick ? 3 : 2), pasteEnabled, !pasting, let target = chatGPTUnderPointer() else { return }
-        if let armed {
-            paste(into: target.app, window: target.window, armed: armed, pointerMustStay: true)
-        } else if case .folder = source, ScreencapturePrefs.thumbnailOn {
-            earlyClick = Date()   // the screenshot may have been taken already and simply not be saved yet
-        }
+        guard count == (trigger == .tripleClick ? 3 : 2), pasteEnabled, !pasting else { return }
+        let point = WindowHitTest.pointer()
+        guard let target = chatGPTUnderPointer(point), !isCovered(point, target.app) else { return }
+        if noteEarlyTrigger(byShortcut: false) { return }
+        if let armed { paste(into: target.app, window: target.window, armed: armed, pointerMustStay: true) }
     }
 
     private func shortcutPressed() {
-        guard let armed, !pasting else { return }
-        if let target = chatGPTUnderPointer() {
-            paste(into: target.app, window: target.window, armed: armed, pointerMustStay: false)
-        } else if let app = NSWorkspace.shared.runningApplications.first(where: Self.isChatGPT),
-                  let window = WindowHitTest.frontWindow(ofPID: app.processIdentifier) {
-            paste(into: app, window: window, armed: armed, pointerMustStay: false)
-        } else {
+        guard !pasting else { return }
+        if noteEarlyTrigger(byShortcut: true) { return }
+        guard let armed else { return }
+        guard let target = shortcutTarget() else {
             Toast.show("Open a ChatGPT window first", seconds: 2.5)
+            return
         }
+        paste(into: target.app, window: target.window, armed: armed, pointerMustStay: false)
     }
 
-    private func samplePointer() {
-        guard pasteEnabled, armed == nil else { return }   // while armed the hover timer keeps this up to date
-        if chatGPTUnderPointer() == nil { lastSeenOffChatGPT = Date() }
+    /// The ChatGPT window under the pointer, else ChatGPT's front window.
+    private func shortcutTarget() -> (app: NSRunningApplication, window: WindowUnderPointer)? {
+        if let target = chatGPTUnderPointer() { return target }
+        guard let app = NSWorkspace.shared.runningApplications.first(where: Self.isChatGPT),
+              let window = WindowHitTest.frontWindow(ofPID: app.processIdentifier) else { return nil }
+        return (app, window)
+    }
+
+    /// The window list only knows ordinary windows. A menu, popover or floating panel over ChatGPT belongs to
+    /// someone else, and accessibility can see that.
+    private func isCovered(_ point: CGPoint, _ app: NSRunningApplication) -> Bool {
+        guard let owner = Paster.ownerPID(at: point), owner != app.processIdentifier else { return false }
+        if !loggedOccluder {
+            loggedOccluder = true
+            SpeedyShared.log.notice("pointer is over ChatGPT but process \(owner) has something on top of it; not pasting there")
+        }
+        return true
     }
 
     // MARK: arming
@@ -204,11 +254,19 @@ final class ScreenshotPasteController {
         // With the corner preview on, the file is only saved about five seconds after the capture, and by then
         // the tech may already be resting on ChatGPT. Look further back for "the pointer was somewhere else".
         arm(ref, pointerMemory: ScreencapturePrefs.thumbnailOn ? 8 : 1.5)
-        // The tech already double- or triple-clicked in ChatGPT while the corner preview was holding the file back.
-        if let early = earlyClick, Date().timeIntervalSince(early) < 8, let armed, !pasting, let target = chatGPTUnderPointer() {
-            paste(into: target.app, window: target.window, armed: armed, pointerMustStay: true)
+
+        // The tech already clicked or pressed the shortcut while the corner preview was holding this file back.
+        let early = earlyTrigger
+        earlyTrigger = nil
+        guard let early, Date().timeIntervalSince(early.at) < 10, let armed, !pasting else { return }
+        if early.byShortcut {
+            if let target = shortcutTarget() { paste(into: target.app, window: target.window, armed: armed, pointerMustStay: false) }
+        } else {
+            let point = WindowHitTest.pointer()
+            if let target = chatGPTUnderPointer(point), !isCovered(point, target.app) {
+                paste(into: target.app, window: target.window, armed: armed, pointerMustStay: true)
+            }
         }
-        earlyClick = nil
     }
 
     private func arm(_ ref: ScreenshotRef, pointerMemory: TimeInterval) {
@@ -274,19 +332,20 @@ final class ScreenshotPasteController {
         guard let armed, !pasting else { return }
         if Date().timeIntervalSince(armed.at) > expiry { disarm("expired"); return }
         if !stillValid(armed) { disarm("screenshot no longer there"); return }
-        guard trigger == .hover else { return }   // the other triggers paste from a click or a key, not from here
-        if let hoverMaxAge, Date().timeIntervalSince(armed.at) > hoverMaxAge { return }   // too old: double-click only
 
+        // Keep track of where the pointer has been whatever the trigger is: the next screenshot needs to know.
         let point = WindowHitTest.pointer()
         let moved = hypot(point.x - lastPointer.x, point.y - lastPointer.y)
         lastPointer = point
-
         guard let target = chatGPTUnderPointer(point) else {
             sawPointerElsewhere = true
             lastSeenOffChatGPT = Date()
             dwellTicks = 0
             return
         }
+
+        guard trigger == .hover else { return }   // the other triggers paste from a click or a key, not from here
+        if let hoverMaxAge, Date().timeIntervalSince(armed.at) > hoverMaxAge { return }   // too old: double-click only
         // "Moves back to chat": the pointer must have been somewhere else since the screenshot was taken.
         guard sawPointerElsewhere else { return }
         // Still moving, or dragging something across the window, is not "coming back to chat".
@@ -297,13 +356,7 @@ final class ScreenshotPasteController {
         }
         dwellTicks += 1
         guard dwellTicks >= dwellNeeded else { return }
-        // The window list only knows ordinary windows. A menu, popover or panel floating over ChatGPT belongs
-        // to someone else, and accessibility can see that.
-        if let owner = Paster.ownerPID(at: point), owner != target.app.processIdentifier {
-            if !loggedOccluder {
-                loggedOccluder = true
-                SpeedyShared.log.notice("pointer is over ChatGPT but process \(owner) has something on top of it; not pasting there")
-            }
+        if isCovered(point, target.app) {
             dwellTicks = 0
             return
         }
@@ -312,6 +365,14 @@ final class ScreenshotPasteController {
 
     // MARK: paste
 
+    /// Puts back what the tech had copied before a saved screenshot was put on the clipboard for pasting, unless
+    /// they have copied something else since.
+    private func returnBorrowedClipboard(token: Int? = nil) {
+        guard let borrow, token == nil || token == borrow.token else { return }
+        self.borrow = nil
+        if NSPasteboard.general.changeCount == borrow.count { ClipboardSwap.restore(borrow.snapshot) }
+    }
+
     private func paste(into app: NSRunningApplication, window: WindowUnderPointer, armed: Armed, pointerMustStay: Bool) {
         pasting = true
         hoverTimer?.invalidate(); hoverTimer = nil
@@ -319,8 +380,8 @@ final class ScreenshotPasteController {
             // A saved file has to be put on the clipboard for the paste. What the tech had copied is kept and
             // put back afterwards, because in this mode a screenshot is not supposed to touch the clipboard.
             let expected: Int
-            var borrowed: ClipboardSnapshot?
-            var borrowedClipboard = false
+            var borrowToken: Int?
+            var clipboardReplaced = false
             switch armed.ref {
             case .clipboard(let count):
                 expected = count
@@ -330,9 +391,24 @@ final class ScreenshotPasteController {
                     if self.armed?.id == armed.id { self.disarm("screenshot file could not be read") }
                     return
                 }
-                borrowed = ClipboardSwap.snapshot()
+                // If an earlier screenshot is still sitting on the clipboard from the paste before, what has to
+                // come back in the end is what the tech had before THAT one, not the earlier screenshot.
+                let original: ClipboardSnapshot?
+                if let earlier = self.borrow, NSPasteboard.general.changeCount == earlier.count {
+                    original = earlier.snapshot
+                } else {
+                    original = ClipboardSwap.snapshot()
+                }
                 expected = ClipboardSwap.putImage(data, fileExtension: url.pathExtension)
-                borrowedClipboard = true
+                if let original {
+                    self.borrow = (original, expected, self.nextBorrowToken)
+                    borrowToken = self.nextBorrowToken
+                    self.nextBorrowToken += 1
+                } else {
+                    self.borrow = nil
+                    clipboardReplaced = true   // too big to set aside, or macOS will not let it be read quietly
+                    SpeedyShared.log.notice("the clipboard could not be set aside; it now holds the screenshot")
+                }
             }
 
             // Only the current ChatGPT app is known to route a paste to its message box from anywhere in the
@@ -344,13 +420,13 @@ final class ScreenshotPasteController {
             self.pasting = false
             SpeedyShared.log.notice("paste result: \(String(describing: result), privacy: .public)")
 
-            if borrowedClipboard, let borrowed {
+            if let borrowToken {
                 // Give ChatGPT a moment to read the picture before the old contents go back; straight away
-                // when nothing was pasted. Never overwrite something the tech copied in the meantime.
+                // when nothing was pasted.
                 let delay: Duration = result == .pasted ? .milliseconds(1200) : .zero
                 Task { @MainActor in
                     try? await Task.sleep(for: delay)
-                    if NSPasteboard.general.changeCount == expected { ClipboardSwap.restore(borrowed) }
+                    self.returnBorrowedClipboard(token: borrowToken)
                 }
             }
 
@@ -359,10 +435,12 @@ final class ScreenshotPasteController {
                 if self.armed != nil { self.dwellTicks = 0; self.startHoverTimer() }
                 return
             }
+            let fromFile = { if case .file = armed.ref { return true } else { return false } }()
             switch result {
             case .pasted:
                 self.disarm("pasted")
-                Toast.show("Screenshot pasted into ChatGPT", seconds: 1.4)
+                Toast.show(clipboardReplaced ? "Screenshot pasted into ChatGPT. It is now on your clipboard too"
+                                             : "Screenshot pasted into ChatGPT", seconds: clipboardReplaced ? 3 : 1.4)
             case .notTrusted:
                 self.disarm("no accessibility")
                 Toast.show("Speedy Bot needs Accessibility permission to paste", seconds: 3)
@@ -370,9 +448,16 @@ final class ScreenshotPasteController {
             case .clipboardChanged:
                 self.disarm("clipboard changed")
             case .otherFieldFocused:
-                self.disarm("other field focused")
-                Toast.show(borrowedClipboard ? "Click the ChatGPT message box, then take the screenshot again"
-                                             : "Screenshot is on the clipboard. Click the message box and press ⌘V", seconds: 3.5)
+                if fromFile {
+                    // The file is still there: stay armed, so clicking the message box and trying again works.
+                    Toast.show("Click the ChatGPT message box first, then try again", seconds: 3.5)
+                    self.sawPointerElsewhere = false
+                    self.dwellTicks = 0
+                    self.startHoverTimer()
+                } else {
+                    self.disarm("other field focused")
+                    Toast.show("Screenshot is on the clipboard. Click the message box and press ⌘V", seconds: 3.5)
+                }
             case .pointerLeft:
                 // The pointer has been elsewhere again; pasting waits for it to come back.
                 self.sawPointerElsewhere = true

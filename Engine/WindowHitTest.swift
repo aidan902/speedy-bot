@@ -37,6 +37,13 @@ public enum WindowHitTest {
         return nil
     }
 
+    /// The system's corner preview of a screenshot that was just taken is on screen. While it shows, the
+    /// screenshot's file has not been saved yet.
+    public static func screenshotPreviewVisible() -> Bool {
+        guard let raw = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return false }
+        return raw.contains { ($0[kCGWindowOwnerName as String] as? String) == "screencaptureui" }
+    }
+
     /// The frontmost ordinary window of a process, wherever the pointer is.
     public static func frontWindow(ofPID pid: pid_t) -> WindowUnderPointer? {
         guard let raw = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }

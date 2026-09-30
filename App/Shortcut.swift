@@ -98,6 +98,11 @@ struct ShortcutRecorder: View {
             }
         }
         .onDisappear { stop() }
+        // Closing the window or switching to another app must end the recording, or the next keys typed into
+        // Speedy Bot would be swallowed and the first one with a modifier kept as the shortcut.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in stop() }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { _ in stop() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in stop() }
     }
 
     private func start() {
@@ -118,6 +123,7 @@ struct ShortcutRecorder: View {
     }
 
     private func stop() {
+        guard recording || monitor != nil else { return }
         recording = false
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil

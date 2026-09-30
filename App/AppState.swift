@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import Combine
 import ServiceManagement
 import WidgetKit
@@ -32,6 +33,13 @@ final class AppState: ObservableObject {
     }
     /// A ScreenConnect session client is running on this Mac.
     @Published private(set) var screenConnectOpen = false
+    private var sessionClosedAt = Date.distantPast
+    /// In Auto, the last screenshot of a session is usually pasted AFTER the session is closed. So when the
+    /// session goes away, the screenshot features stay up while a screenshot is waiting (and for a few seconds
+    /// regardless, because the corner preview can still be holding the last one back).
+    private var lingering: Bool {
+        mode == .auto && !screenConnectOpen && (armed || Date().timeIntervalSince(sessionClosedAt) < 12)
+    }
     /// Not switched off (the options are usable). Whether anything is actually running is `active`.
     var masterEnabled: Bool { mode != .off }
     /// Speedy Bot is doing its job right now.
@@ -129,6 +137,7 @@ final class AppState: ObservableObject {
     private func senseScreenConnect() {
         let open = NSWorkspace.shared.runningApplications.contains(where: FrontmostAppGate.isScreenConnect)
         guard open != screenConnectOpen else { return }
+        if !open { sessionClosedAt = Date() }
         screenConnectOpen = open
         SpeedyShared.log.notice("ScreenConnect session is \(open ? "open" : "closed", privacy: .public)")
         apply()
@@ -173,8 +182,9 @@ final class AppState: ObservableObject {
     /// The Control Center control (or another copy of the app) changed the stored switches.
     func reloadFromStore() {
         reloading = true
+        // The stored mode is left alone here: when the Control Center control switches Speedy Bot off and on
+        // again, it comes back as whatever it was (On or Auto), not always On.
         mode = Self.storedMode()
-        SpeedyShared.defaults.set(mode.rawValue, forKey: SpeedyShared.modeKey)
         screenshotPaste = SpeedyShared.bool(SpeedyShared.screenshotPasteKey, default: true)
         remoteTyping = SpeedyShared.bool(SpeedyShared.remoteTypingKey, default: true)
         fastTyping = SpeedyShared.bool(SpeedyShared.fastTypingKey, default: false)
@@ -202,7 +212,7 @@ final class AppState: ObservableObject {
         // Resting the pointer pastes a fresh screenshot; an old one then needs a double-click (if the tech wants that).
         screenshot.hoverMaxAge = staleDoubleClick ? TimeInterval(max(1, staleAfterSeconds)) : nil
         screenshotNote = nil
-        if !(active && (screenshotPaste || saveScreenshots)) {
+        if !((active || lingering) && (screenshotPaste || saveScreenshots)) {
             screenshot.stop()
             ScreencapturePrefs.restore()
         } else if keepNormalScreenshots {
@@ -233,7 +243,25 @@ final class AppState: ObservableObject {
 
     var captureShortcutLabel: String { (captureShortcut ?? WindowCaptureController.defaultShortcut).label }
 
+    /// Two jobs on one key combination cannot both work. Says which job already has it, if any.
+    private func owner(of spec: HotKeySpec, except slot: HotKeySpec.Slot) -> String? {
+        let typing = typingShortcut ?? HotKeySpec(keyCode: Int(LayoutKeyMap.keyCodeWithCommand(for: "v") ?? CGKeyCode(kVK_ANSI_V)), carbonModifiers: cmdKey | shiftKey)
+        let capture = captureShortcut ?? WindowCaptureController.defaultShortcut
+        if slot != .typing, spec == typing { return "typing into ScreenConnect" }
+        if slot != .capture, spec == capture { return "capturing the ScreenConnect window" }
+        if slot != .paste, let pasteShortcut, spec == pasteShortcut { return "pasting into ChatGPT" }
+        return nil
+    }
+
+    private func refuse(_ spec: HotKeySpec?, for slot: HotKeySpec.Slot) -> Bool {
+        guard let spec, let job = owner(of: spec, except: slot) else { return false }
+        NSSound.beep()
+        Toast.show("\(spec.label) is already the shortcut for \(job)", seconds: 3)
+        return true
+    }
+
     func setCaptureShortcut(_ spec: HotKeySpec?) {
+        if refuse(spec, for: .capture) { return }
         captureShortcut = spec
         HotKeySpec.save(spec, .capture)
         apply()
@@ -242,12 +270,14 @@ final class AppState: ObservableObject {
     var typingShortcutLabel: String { typingShortcut?.label ?? HotKeySpec.defaultLabel }
 
     func setTypingShortcut(_ spec: HotKeySpec?) {
+        if refuse(spec, for: .typing) { return }
         typingShortcut = spec
         HotKeySpec.save(spec, .typing)
         typer.shortcutChanged()
     }
 
     func setPasteShortcut(_ spec: HotKeySpec?) {
+        if refuse(spec, for: .paste) { return }
         pasteShortcut = spec
         HotKeySpec.save(spec, .paste)
         apply()
@@ -297,7 +327,7 @@ final class AppState: ObservableObject {
     }
 
     private func saveScreenshotIfWanted(_ ref: ScreenshotRef) {
-        guard active, saveScreenshots else { return }
+        guard active || lingering, saveScreenshots else { return }
         if let draft = incidentDraft { setIncident(draft) }   // a number typed but not yet confirmed still counts
         let shot: (data: Data, ext: String)
         switch ref {
@@ -336,11 +366,14 @@ final class AppState: ObservableObject {
 
     private func refreshPermission() {
         senseScreenConnect()   // in case a launch or quit notification was missed
-        if active && (screenshotPaste || saveScreenshots) {
+        // The grace period after a session closed has run out: wind the screenshot side down.
+        if !active, !lingering, screenshot.source != nil { apply() }
+        if (active || lingering) && (screenshotPaste || saveScreenshots) {
             if keepNormalScreenshots {
                 // The tech may change where screenshots are saved, or point them at the clipboard; follow them.
+                // A folder that was renamed, deleted or unmounted is looked for again.
                 let wanted: ScreenshotSource = ScreencapturePrefs.sendsToClipboard ? .clipboard : .folder(ScreencapturePrefs.screenshotFolder)
-                if screenshot.source != nil, screenshot.source != wanted { apply() }
+                if screenshot.source != wanted || !screenshot.isHealthy { apply() }
             } else {
                 ScreencapturePrefs.reassertIfDrifted()
             }

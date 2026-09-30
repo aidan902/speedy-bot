@@ -28,28 +28,34 @@ final class WindowCaptureController {
         registered = wanted
         guard let wanted else { return }
         let hk = GlobalHotKey(keyCode: wanted.keyCode, carbonModifiers: wanted.carbonModifiers) { [weak self] in self?.fire() }
-        hk.register()
+        guard hk.register() == noErr else {
+            SpeedyShared.log.error("the capture shortcut could not be registered (already taken?)")
+            registered = nil   // try again the next time the settings are applied
+            return
+        }
         hotKey = hk
     }
 
-    /// The session window: ScreenConnect's biggest ordinary window that is not its Chat or Status window.
+    /// The session window the tech is using: the frontmost ordinary ScreenConnect window that is not its Chat or
+    /// Status window (the window list comes front to back, so with two sessions open it is the one on top).
     private func sessionWindow() -> CGWindowID? {
         let pids = Set(NSWorkspace.shared.runningApplications.filter(FrontmostAppGate.isScreenConnect).map(\.processIdentifier))
         guard !pids.isEmpty,
               let raw = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
-        var best: (id: CGWindowID, area: CGFloat)?
         for d in raw {
             guard let pid = d[kCGWindowOwnerPID as String] as? pid_t, pids.contains(pid),
                   (d[kCGWindowLayer as String] as? Int) == 0,
                   let bd = d[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: bd),
-                  r.width >= 200, r.height >= 150, let id = d[kCGWindowNumber as String] as? CGWindowID else { continue }
-            // Window names are only readable once Screen Recording is allowed; without them size decides.
+                  r.width >= 400, r.height >= 300, let id = d[kCGWindowNumber as String] as? CGWindowID else { continue }
+            // Window names are only readable once Screen Recording is allowed; until then the size limit above
+            // is what keeps the small Chat and Status windows out.
             if let name = d[kCGWindowName as String] as? String, name.hasPrefix("Chat - ") || name.hasPrefix("Status - ") { continue }
-            let area = r.width * r.height
-            if best == nil || area > best!.area { best = (id, area) }
+            return id
         }
-        return best?.id
+        return nil
     }
+
+    private var askedForScreenRecording = false
 
     private func fire() {
         guard !capturing else { return }
@@ -57,10 +63,12 @@ final class WindowCaptureController {
             Toast.show("No ScreenConnect session window to capture", seconds: 2.5)
             return
         }
-        guard CGPreflightScreenCaptureAccess() else {
+        // This answer is fixed for as long as the app runs, even after the tech allows it in System Settings.
+        // So ask once; after that, just try. The capture is done by a separate tool that gets the fresh answer.
+        if !CGPreflightScreenCaptureAccess() && !askedForScreenRecording {
+            askedForScreenRecording = true
             CGRequestScreenCaptureAccess()   // shows the system prompt the first time
             Toast.show("Allow Speedy Bot under Privacy & Security > Screen Recording, then press the shortcut again", seconds: 5)
-            state.showWindow?()
             return
         }
 
@@ -108,7 +116,9 @@ final class WindowCaptureController {
             }
         } else if status != 0 || file != nil {
             SpeedyShared.log.error("session window capture failed (status \(status))")
-            Toast.show("Could not capture the ScreenConnect window", seconds: 3)
+            Toast.show(CGPreflightScreenCaptureAccess()
+                       ? "Could not capture the ScreenConnect window"
+                       : "Could not capture. Allow Speedy Bot under Privacy & Security > Screen Recording, then quit and reopen Speedy Bot", seconds: 5)
         }
     }
 }
