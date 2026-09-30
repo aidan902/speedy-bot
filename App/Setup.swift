@@ -9,6 +9,8 @@ final class SetupStatus: ObservableObject {
     @Published private(set) var screenRecording = false
     @Published private(set) var screenshotFolder = false
     @Published private(set) var documents = false
+    /// Reading what is on the clipboard (to type it into a session) can be gated by macOS on newer systems.
+    @Published private(set) var clipboard = true
     /// Screen Recording was asked for during this run: macOS only reports it granted after the app reopens.
     @Published private(set) var screenRecordingAsked = false
 
@@ -31,6 +33,7 @@ final class SetupStatus: ObservableObject {
     func refresh(probeFolders: Bool) {
         accessibility = Permissions.accessibilityTrusted
         screenRecording = CGPreflightScreenCaptureAccess()
+        clipboard = ClipboardSwap.canReadSilently
         if probeFolders {
             screenshotFolder = Self.canList(ScreencapturePrefs.screenshotFolder)
             documents = Self.canList(FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first)
@@ -62,11 +65,18 @@ final class SetupStatus: ObservableObject {
         documents = Self.canList(FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first)
     }
 
+    /// One deliberate read of the clipboard is what brings up the "paste from other apps" question where macOS asks it.
+    func askClipboard() {
+        _ = NSPasteboard.general.string(forType: .string)
+        clipboard = ClipboardSwap.canReadSilently
+    }
+
     /// Everything at once, in the order that reads best: the two folder questions (each waits for an answer),
     /// then Screen Recording, then Accessibility, which ends in System Settings.
     func askEverything() {
         if !screenshotFolder { askScreenshotFolder() }
         if !documents { askDocuments() }
+        if !clipboard { askClipboard() }
         if !screenRecording { askScreenRecording() }
         if !accessibility { askAccessibility() }
     }
@@ -119,7 +129,7 @@ struct SetupView: View {
                     .font(.caption).foregroundStyle(.secondary)
 
                 PermissionRow(granted: status.accessibility, title: "Accessibility",
-                              detail: "Lets Speedy Bot press ⌘V and type for you. Turn on Speedy Bot in the list that opens.",
+                              detail: "Lets Speedy Bot press ⌘V in the chat app and type into ScreenConnect. Turn on Speedy Bot in the list that opens.",
                               buttonTitle: status.accessibility ? nil : "Open Settings") { status.askAccessibility() }
                 PermissionRow(granted: status.screenRecording || status.screenRecordingAsked, title: "Screen Recording",
                               detail: status.screenRecordingAsked && !status.screenRecording
@@ -132,6 +142,9 @@ struct SetupView: View {
                 PermissionRow(granted: status.documents, title: "Documents folder",
                               detail: "For filing screenshots under SpeedyBot Documentation by incident.",
                               buttonTitle: status.documents ? nil : "Allow") { status.askDocuments() }
+                PermissionRow(granted: status.clipboard, title: "Clipboard",
+                              detail: "To read what you copied and type it into the ScreenConnect session.",
+                              buttonTitle: status.clipboard ? nil : "Allow") { status.askClipboard() }
             }
             .padding(12)
             .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
