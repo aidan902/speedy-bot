@@ -179,7 +179,7 @@ struct MainView: View {
                 HStack(spacing: 8) {
                     RoundToggle(symbol: "checkmark", label: "Older screenshots need a double-click", isOn: $state.staleDoubleClick, size: 22, emptyWhenOff: true)
                     Text("After")
-                    TextField("30", value: $state.staleAfterSeconds, format: .number)
+                    SecondsField(value: $state.staleAfterSeconds)
                         .textFieldStyle(.roundedBorder).multilineTextAlignment(.trailing).frame(width: 48)
                         .disabled(!state.staleDoubleClick)
                     Text("seconds, double-click to paste").lineLimit(1)
@@ -239,6 +239,44 @@ struct MainView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading).padding(.leading, inset).padding(.trailing, 12).padding(.bottom, 12)
+    }
+}
+
+/// A whole-seconds field that edits a draft and commits a clamped value, so the number shown is the rule in force.
+private struct SecondsField: View {
+    @Binding var value: Int
+    var range: ClosedRange<Int> = 1...1800
+    @State private var draft: Int?
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        TextField("30", value: $draft, format: .number.grouping(.never))
+            .focused($focused)
+            .onSubmit(commit)
+            .onChange(of: focused) { isFocused in if !isFocused { commit() } }
+            .onChange(of: value) { draft = $0 }
+            .onAppear { draft = value }
+            // Clicking elsewhere or switching apps does not end editing on macOS, so commit then too.
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in commit() }
+            .onDisappear(perform: commit)
+    }
+
+    private func commit() {
+        let clamped = min(max(draft ?? value, range.lowerBound), range.upperBound)
+        if clamped != value { value = clamped }
+        draft = clamped
+    }
+}
+
+/// The window's contents, scrolling when they are taller than the screen (a 13-inch MacBook with every option open).
+struct MainWindowContent: View {
+    @ObservedObject var state: AppState
+
+    var body: some View {
+        ScrollView(.vertical) { MainView(state: state) }
+            .frame(width: 430)
+            .frame(maxHeight: (NSScreen.main?.visibleFrame.height ?? 800) - 40)   // leave room for the title bar
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -332,16 +370,33 @@ private struct FeatureRow: View {
 @MainActor
 final class MainWindowController {
     private let window: NSWindow
+    private var resizeObserver: NSObjectProtocol?
 
     init(state: AppState) {
         // The hosting controller keeps the window exactly as tall as its contents as options open and close.
-        let host = NSHostingController(rootView: MainView(state: state))
+        let host = NSHostingController(rootView: MainWindowContent(state: state))
         host.sizingOptions = [.preferredContentSize]
         window = NSWindow(contentViewController: host)
         window.styleMask = [.titled, .closable, .miniaturizable]
         window.title = "Speedy Bot"
         window.isReleasedWhenClosed = false
+        // A window made this way starts at 1x32 and only takes the SwiftUI size on the first layout pass,
+        // growing down and right from the same corner. Size it first, then centre.
+        host.view.layoutSubtreeIfNeeded()
+        window.setContentSize(host.view.fittingSize)
         window.center()
+        // AppKit does not pull a window back when it grows past the bottom of the screen.
+        resizeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResizeNotification, object: window, queue: .main
+        ) { [weak window] _ in
+            MainActor.assumeIsolated {
+                guard let window, let visible = window.screen?.visibleFrame else { return }
+                var origin = window.frame.origin
+                guard origin.y < visible.minY else { return }
+                origin.y = min(visible.minY, visible.maxY - window.frame.height)   // taller than the screen: pin the top
+                window.setFrameOrigin(origin)
+            }
+        }
     }
 
     static func snapshot(state: AppState, to url: URL) -> Bool {

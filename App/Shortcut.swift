@@ -41,6 +41,14 @@ struct HotKeySpec: Equatable {
         self.init(keyCode: keyCode, carbonModifiers: mods)
     }
 
+    /// ScreenConnect forwards every modifier press at once (Cmd as the Windows key, Option as Alt) but never sees
+    /// the key the shortcut swallows. ⌘T therefore reaches the remote as a bare Windows-key tap (the Start menu
+    /// opens) and ⌥T as a bare Alt tap (the menu bar activates), and the typed text goes there. A Shift or
+    /// Control in the combination cancels both.
+    var leavesBareModifierTapOnRemote: Bool {
+        carbonModifiers & (cmdKey | optionKey) != 0 && carbonModifiers & (shiftKey | controlKey) == 0
+    }
+
     /// "⌃⌥⇧⌘T", in the order macOS menus use.
     var label: String {
         var s = ""

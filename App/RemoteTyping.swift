@@ -203,7 +203,9 @@ final class RemoteTypingController {
         DispatchQueue.global(qos: .userInitiated).async {
             // The remote has already seen the real Cmd and Shift go down. Typing before they come back up
             // would turn every letter into a Windows-key shortcut on the other end.
-            let released = TextTyper.waitForPhysicalRelease(key: hotKeyCode, timeout: 3.0)
+            let wait = TextTyper.waitForPhysicalRelease(key: hotKeyCode, timeout: 3.0)
+            let released = wait.released
+            SpeedyShared.log.notice("typing wait: \(wait.waitedMs) ms, keyboard held keys=\(wait.sawHardware), software-only=\(wait.sawSoftwareOnly)")
             var posted = 0
             if released {
                 usleep(120_000)   // let the key-ups reach the remote first

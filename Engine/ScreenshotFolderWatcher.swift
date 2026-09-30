@@ -77,6 +77,11 @@ public final class ScreenshotFolderWatcher {
             guard Self.imageExtensions.contains(url.pathExtension.lowercased()) else { known.insert(name); continue }
             let id = Self.inode(url)
             if let id, seenFiles.contains(id) { known.insert(name); continue }   // an old file under a new name
+            if Self.isCloudPlaceholder(url) {                                    // synced in from another Mac, not downloaded
+                known.insert(name)
+                if let id { seenFiles.insert(id) }
+                continue
+            }
             let age = Self.age(of: url)
             if Self.isScreenshot(url) {
                 known.insert(name)
@@ -92,6 +97,11 @@ public final class ScreenshotFolderWatcher {
 
     private static func isScreenshot(_ url: URL) -> Bool {
         getxattr(url.path, screenshotTag, nil, 0, 0, 0) >= 0
+    }
+
+    private static func isCloudPlaceholder(_ url: URL) -> Bool {
+        var st = stat()
+        return lstat(url.path, &st) == 0 && st.st_flags & UInt32(SF_DATALESS) != 0
     }
 
     private static func inode(_ url: URL) -> UInt64? {

@@ -100,32 +100,42 @@ public enum TextTyper {
         CGEventSource.flagsState(.hidSystemState).contains(.maskAlphaShift)
     }
 
+    /// How the wait for the shortcut's keys went. Timings and yes/no only, for the log.
+    public struct ReleaseWait: Sendable {
+        public let released: Bool
+        public let waitedMs: Int
+        public let sawHardware: Bool       // the keyboard itself showed the shortcut's keys down
+        public let sawSoftwareOnly: Bool   // only software did (a mouse utility or macro tool pressed them)
+    }
+
     /// Blocks (call OFF the main thread) until the shortcut's own keys are up and have STAYED up for a moment.
     /// Required for remote typing: the remote client has already seen Cmd/Shift go down, and it puts the Windows
     /// key on every key it forwards until it has seen them come back up. Typing too early turns the first letters
     /// into Win+letter shortcuts on the other end (the first character simply disappears).
     /// Both the hardware state and the session state are checked: a mouse button mapped to a keystroke presses
     /// the keys in software, which the hardware state never shows.
-    public static func waitForPhysicalRelease(key: CGKeyCode = CGKeyCode(kVK_ANSI_V), timeout: TimeInterval = 3.0) -> Bool {
-        func keysUp() -> Bool {
-            for state in [CGEventSourceStateID.hidSystemState, .combinedSessionState] {
-                if !CGEventSource.flagsState(state).intersection(modifierMask).isEmpty { return false }
-                if CGEventSource.keyState(state, key: key) { return false }
-            }
-            return true
+    public static func waitForPhysicalRelease(key: CGKeyCode = CGKeyCode(kVK_ANSI_V), timeout: TimeInterval = 3.0) -> ReleaseWait {
+        func held(_ s: CGEventSourceStateID) -> Bool {
+            !CGEventSource.flagsState(s).intersection(modifierMask).isEmpty || CGEventSource.keyState(s, key: key)
         }
-        let deadline = Date().addingTimeInterval(timeout)
-        var quietSince: Date?
+        let start = Date(), deadline = start.addingTimeInterval(timeout)
+        var quietSince: Date?, sawHardware = false, sawSoftwareOnly = false
+        func result(_ ok: Bool) -> ReleaseWait {
+            ReleaseWait(released: ok, waitedMs: Int(Date().timeIntervalSince(start) * 1000),
+                        sawHardware: sawHardware, sawSoftwareOnly: sawSoftwareOnly)
+        }
         while Date() < deadline {
-            if keysUp() {
+            let hw = held(.hidSystemState), sw = held(.combinedSessionState)
+            if hw { sawHardware = true } else if sw { sawSoftwareOnly = true }
+            if !hw && !sw {
                 if quietSince == nil { quietSince = Date() }
-                if Date().timeIntervalSince(quietSince!) >= 0.15 { return true }
+                if Date().timeIntervalSince(quietSince!) >= 0.15 { return result(true) }
             } else {
                 quietSince = nil
             }
             usleep(15_000)
         }
-        return false
+        return result(false)
     }
 
     // MARK: event construction (creating a CGEvent posts nothing)

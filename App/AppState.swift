@@ -106,9 +106,9 @@ final class AppState: ObservableObject {
     init() {
         mode = Self.storedMode()
         staleDoubleClick = SpeedyShared.bool(SpeedyShared.staleDoubleClickKey, default: false)
-        staleAfterSeconds = max(1, SpeedyShared.defaults.object(forKey: SpeedyShared.staleAfterKey) as? Int ?? 30)
+        staleAfterSeconds = min(max(SpeedyShared.defaults.object(forKey: SpeedyShared.staleAfterKey) as? Int ?? 30, 1), 1800)
         captureWindow = SpeedyShared.bool(SpeedyShared.captureWindowKey, default: true)
-        captureShortcut = HotKeySpec.load(.capture)
+        captureShortcut = HotKeySpec.load(.capture).flatMap { $0.leavesBareModifierTapOnRemote ? nil : $0 }
         autoUpdate = SpeedyShared.bool(SpeedyShared.autoUpdateKey, default: true)
         // Someone running a build Apple has not notarized is a beta tester; a notarized install stays on full releases.
         betaUpdates = SpeedyShared.bool(SpeedyShared.betaUpdatesKey, default: !Updater.runningCopyIsNotarized)
@@ -119,7 +119,7 @@ final class AppState: ObservableObject {
         keepNormalScreenshots = SpeedyShared.bool(SpeedyShared.keepNormalScreenshotsKey, default: false)
         pasteTrigger = SpeedyShared.defaults.string(forKey: SpeedyShared.pasteTriggerKey).flatMap(PasteTrigger.init(rawValue:)) ?? .hover
         pasteShortcut = HotKeySpec.load(.paste)
-        typingShortcut = HotKeySpec.load(.typing)
+        typingShortcut = HotKeySpec.load(.typing).flatMap { $0.leavesBareModifierTapOnRemote ? nil : $0 }
         incident = SpeedyShared.defaults.string(forKey: SpeedyShared.incidentKey) ?? ""
         docsRoot = SpeedyShared.defaults.string(forKey: SpeedyShared.docsFolderKey).map { URL(fileURLWithPath: $0, isDirectory: true) }
             ?? Documentation.defaultRoot
@@ -210,7 +210,7 @@ final class AppState: ObservableObject {
         screenshot.shortcut = pasteShortcut
         screenshot.pasteEnabled = screenshotPaste
         // Resting the pointer pastes a fresh screenshot; an old one then needs a double-click (if the tech wants that).
-        screenshot.hoverMaxAge = staleDoubleClick ? TimeInterval(max(1, staleAfterSeconds)) : nil
+        screenshot.hoverMaxAge = staleDoubleClick ? TimeInterval(min(max(staleAfterSeconds, 1), 1800)) : nil
         screenshotNote = nil
         if !((active || lingering) && (screenshotPaste || saveScreenshots)) {
             screenshot.stop()
@@ -254,10 +254,19 @@ final class AppState: ObservableObject {
     }
 
     private func refuse(_ spec: HotKeySpec?, for slot: HotKeySpec.Slot) -> Bool {
-        guard let spec, let job = owner(of: spec, except: slot) else { return false }
-        NSSound.beep()
-        Toast.show("\(spec.label) is already the shortcut for \(job)", seconds: 3)
-        return true
+        guard let spec else { return false }
+        if let job = owner(of: spec, except: slot) {
+            NSSound.beep()
+            Toast.show("\(spec.label) is already the shortcut for \(job)", seconds: 3)
+            return true
+        }
+        // The typing and capture shortcuts are pressed inside a session, where the remote sees the modifiers.
+        if slot != .paste, spec.leavesBareModifierTapOnRemote {
+            NSSound.beep()
+            Toast.show("Add ⇧ or ⌃ to that shortcut. On its own, ⌘ reaches the remote as the Windows key and ⌥ as Alt, and the Start menu or a menu would open", seconds: 6)
+            return true
+        }
+        return false
     }
 
     func setCaptureShortcut(_ spec: HotKeySpec?) {
