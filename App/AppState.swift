@@ -76,6 +76,16 @@ final class AppState: ObservableObject {
     private(set) lazy var updater = Updater(state: self)
     /// The tech's own shortcut for that capture (nil = the standard ⌘⇧2).
     @Published private(set) var captureShortcut: HotKeySpec?
+    /// The chat apps a screenshot may be pasted into. Always at least one.
+    @Published var pasteTargets: Set<PasteTarget> {
+        didSet {
+            if pasteTargets.isEmpty { pasteTargets = oldValue.isEmpty ? [.chatGPT] : oldValue; return }
+            guard !reloading, pasteTargets != oldValue else { return }
+            SpeedyShared.defaults.set(PasteTarget.allCases.filter(pasteTargets.contains).map(\.rawValue), forKey: SpeedyShared.pasteTargetsKey)
+            apply()
+        }
+    }
+    var pasteTargetNames: String { PasteTarget.names(pasteTargets) }
     /// The shortcut for the keyboard-shortcut paste trigger (nil until the tech records one).
     @Published private(set) var pasteShortcut: HotKeySpec?
     /// The tech's own shortcut for typing into a session (nil = the standard ⌘⇧V).
@@ -119,6 +129,8 @@ final class AppState: ObservableObject {
         keepNormalScreenshots = SpeedyShared.bool(SpeedyShared.keepNormalScreenshotsKey, default: false)
         pasteTrigger = SpeedyShared.defaults.string(forKey: SpeedyShared.pasteTriggerKey).flatMap(PasteTrigger.init(rawValue:)) ?? .hover
         pasteShortcut = HotKeySpec.load(.paste)
+        let storedTargets = (SpeedyShared.defaults.stringArray(forKey: SpeedyShared.pasteTargetsKey) ?? []).compactMap(PasteTarget.init(rawValue:))
+        pasteTargets = storedTargets.isEmpty ? [.chatGPT] : Set(storedTargets)
         typingShortcut = HotKeySpec.load(.typing).flatMap { $0.leavesBareModifierTapOnRemote ? nil : $0 }
         incident = SpeedyShared.defaults.string(forKey: SpeedyShared.incidentKey) ?? ""
         docsRoot = SpeedyShared.defaults.string(forKey: SpeedyShared.docsFolderKey).map { URL(fileURLWithPath: $0, isDirectory: true) }
@@ -209,6 +221,7 @@ final class AppState: ObservableObject {
 
     private func apply() {
         screenshot.trigger = pasteTrigger
+        screenshot.targets = pasteTargets
         screenshot.shortcut = pasteShortcut
         screenshot.pasteEnabled = screenshotPaste
         // Resting the pointer pastes a fresh screenshot; an old one then needs a double-click (if the tech wants that).
@@ -251,7 +264,7 @@ final class AppState: ObservableObject {
         let capture = captureShortcut ?? WindowCaptureController.defaultShortcut
         if slot != .typing, spec == typing { return "typing into ScreenConnect" }
         if slot != .capture, spec == capture { return "capturing the ScreenConnect window" }
-        if slot != .paste, let pasteShortcut, spec == pasteShortcut { return "pasting into ChatGPT" }
+        if slot != .paste, let pasteShortcut, spec == pasteShortcut { return "pasting a screenshot into \(pasteTargetNames)" }
         return nil
     }
 

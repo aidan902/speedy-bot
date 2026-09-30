@@ -14,6 +14,50 @@ enum ScreenshotSource: Equatable {
     case folder(URL)
 }
 
+/// The chat apps a screenshot can be pasted into.
+enum PasteTarget: String, CaseIterable, Identifiable {
+    case chatGPT, claude, grok
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .chatGPT: return "ChatGPT"
+        case .claude: return "Claude"
+        case .grok: return "Grok"
+        }
+    }
+
+    /// Only ChatGPT is known to route a paste made anywhere in its window to the message box; there its search and
+    /// rename fields are the places a picture must not go. The others get a plain Cmd+V wherever the cursor is.
+    var refusesOtherTextFields: Bool { self == .chatGPT }
+
+    func matches(_ app: NSRunningApplication) -> Bool {
+        let bid = app.bundleIdentifier ?? ""
+        switch self {
+        case .chatGPT:
+            // The current app and Codex.app share the bundle id com.openai.codex, so the name is checked as well;
+            // helper processes ("ChatGPT Computer Use", "ChatGPTHelper") have other bundle ids.
+            if bid == "com.openai.chat" { return true }
+            return bid == "com.openai.codex" && (app.bundleURL?.deletingPathExtension().lastPathComponent == "ChatGPT" || app.localizedName == "ChatGPT")
+        case .claude:
+            return bid == "com.anthropic.claudefordesktop"
+        case .grok:
+            return ["ai.x.grok", "com.x.grok", "com.xai.grok"].contains(bid) || (bid.lowercased().contains("grok") && app.localizedName == "Grok")
+        }
+    }
+
+    static func matching(_ app: NSRunningApplication, in targets: Set<PasteTarget>) -> PasteTarget? {
+        targets.first { $0.matches(app) }
+    }
+
+    /// "ChatGPT", "ChatGPT or Claude", "ChatGPT, Claude or Grok".
+    static func names(_ targets: Set<PasteTarget>) -> String {
+        let list = allCases.filter(targets.contains).map(\.title)
+        guard list.count > 1 else { return list.first ?? "ChatGPT" }
+        return list.dropLast().joined(separator: ", ") + " or " + list.last!
+    }
+}
+
 /// What makes a waiting screenshot go into ChatGPT.
 enum PasteTrigger: String, CaseIterable, Identifiable {
     /// The pointer moves onto the ChatGPT window. No click, no key, no waiting.
@@ -65,6 +109,8 @@ final class ScreenshotPasteController {
     /// Pasting itself. The watchers also run for saving screenshots, so this can be off while running.
     var pasteEnabled = true { didSet { if !pasteEnabled { disarm("paste switched off") }; syncTriggers() } }
     var trigger = PasteTrigger.hover { didSet { syncTriggers() } }
+    /// Which chat apps count. Always at least one.
+    var targets: Set<PasteTarget> = [.chatGPT]
     /// The key combination for `PasteTrigger.shortcut`.
     var shortcut: HotKeySpec? { didSet { if shortcut != oldValue { hotKey?.unregister(); hotKey = nil; syncTriggers() } } }
     /// In the pointer-rest mode: a screenshot that has been waiting longer than this does not paste by itself any
@@ -146,7 +192,7 @@ final class ScreenshotPasteController {
             if pending != capturePending { capturePending = pending; syncTriggers() }
         }
         guard pasteEnabled, armed == nil else { return }   // while armed the hover timer keeps this up to date
-        if chatGPTUnderPointer() == nil { lastSeenOffChatGPT = Date() }
+        if targetUnderPointer() == nil { lastSeenOffChatGPT = Date() }
     }
 
     // MARK: triggers
@@ -191,7 +237,7 @@ final class ScreenshotPasteController {
     private func clicked(count: Int) {
         guard count == (trigger == .tripleClick ? 3 : 2), pasteEnabled, !pasting else { return }
         let point = WindowHitTest.pointer()
-        guard let target = chatGPTUnderPointer(point), !isCovered(point, target.app, window: target.window.windowID) else { return }
+        guard let target = targetUnderPointer(point), !isCovered(point, target.app, window: target.window.windowID) else { return }
         if noteEarlyTrigger(byShortcut: false) { return }
         if let armed { paste(into: target.app, window: target.window, armed: armed, pointerMustStay: true) }
     }
@@ -201,18 +247,22 @@ final class ScreenshotPasteController {
         if noteEarlyTrigger(byShortcut: true) { return }
         guard let armed else { return }
         guard let target = shortcutTarget() else {
-            Toast.show("Open a ChatGPT window first", seconds: 2.5)
+            Toast.show("Open a \(PasteTarget.names(targets)) window first", seconds: 2.5)
             return
         }
         paste(into: target.app, window: target.window, armed: armed, pointerMustStay: false)
     }
 
-    /// The ChatGPT window under the pointer, else ChatGPT's front window.
+    /// The chat window under the pointer, else the frontmost window of whichever chosen chat app is open.
     private func shortcutTarget() -> (app: NSRunningApplication, window: WindowUnderPointer)? {
-        if let target = chatGPTUnderPointer() { return target }
-        guard let app = NSWorkspace.shared.runningApplications.first(where: Self.isChatGPT),
-              let window = WindowHitTest.frontWindow(ofPID: app.processIdentifier) else { return nil }
-        return (app, window)
+        if let target = targetUnderPointer() { return target }
+        let apps = NSWorkspace.shared.runningApplications.filter { PasteTarget.matching($0, in: targets) != nil }
+        // The one in front first, if one of them is.
+        let ordered = apps.sorted { a, _ in a.isActive }
+        for app in ordered {
+            if let window = WindowHitTest.frontWindow(ofPID: app.processIdentifier) { return (app, window) }
+        }
+        return nil
     }
 
     /// The window list only knows ordinary windows. A menu, popover or floating panel over ChatGPT belongs to
@@ -263,7 +313,7 @@ final class ScreenshotPasteController {
             if let target = shortcutTarget() { paste(into: target.app, window: target.window, armed: armed, pointerMustStay: false) }
         } else {
             let point = WindowHitTest.pointer()
-            if let target = chatGPTUnderPointer(point), !isCovered(point, target.app, window: target.window.windowID) {
+            if let target = targetUnderPointer(point), !isCovered(point, target.app, window: target.window.windowID) {
                 paste(into: target.app, window: target.window, armed: armed, pointerMustStay: true)
             }
         }
@@ -304,20 +354,10 @@ final class ScreenshotPasteController {
 
     // MARK: hover
 
-    /// ChatGPT desktop app. The current app and Codex.app share the bundle id com.openai.codex, so the name is
-    /// checked as well; helper processes ("ChatGPT Computer Use", "ChatGPTHelper") have other bundle ids.
-    static func isChatGPT(_ app: NSRunningApplication) -> Bool {
-        switch app.bundleIdentifier {
-        case "com.openai.chat": return true
-        case "com.openai.codex":
-            return app.bundleURL?.deletingPathExtension().lastPathComponent == "ChatGPT" || app.localizedName == "ChatGPT"
-        default: return false
-        }
-    }
-
-    private func chatGPTUnderPointer(_ point: CGPoint = WindowHitTest.pointer()) -> (app: NSRunningApplication, window: WindowUnderPointer)? {
+    /// The window under the pointer, if it belongs to one of the chosen chat apps.
+    private func targetUnderPointer(_ point: CGPoint = WindowHitTest.pointer()) -> (app: NSRunningApplication, window: WindowUnderPointer)? {
         guard let w = WindowHitTest.windowUnder(point), w.bounds.width >= 200, w.bounds.height >= 120,
-              let app = NSRunningApplication(processIdentifier: w.ownerPID), Self.isChatGPT(app) else { return nil }
+              let app = NSRunningApplication(processIdentifier: w.ownerPID), PasteTarget.matching(app, in: targets) != nil else { return nil }
         return (app, w)
     }
 
@@ -335,7 +375,7 @@ final class ScreenshotPasteController {
 
         // Keep track of where the pointer has been whatever the trigger is: the next screenshot needs to know.
         let point = WindowHitTest.pointer()
-        guard let target = chatGPTUnderPointer(point) else {
+        guard let target = targetUnderPointer(point) else {
             sawPointerElsewhere = true
             lastSeenOffChatGPT = Date()
             dwellTicks = 0
@@ -357,7 +397,7 @@ final class ScreenshotPasteController {
             dwellTicks = 0
             return
         }
-        SpeedyShared.log.notice("pointer moved onto ChatGPT; pasting")
+        SpeedyShared.log.notice("pointer moved onto \(PasteTarget.matching(target.app, in: self.targets)?.title ?? "the chat app", privacy: .public); pasting")
         paste(into: target.app, window: target.window, armed: armed, pointerMustStay: true)
     }
 
@@ -413,7 +453,7 @@ final class ScreenshotPasteController {
             // window; its search and rename fields are the places a picture must not go.
             let result = await Paster.paste(
                 into: app, window: window, expectedChangeCount: expected,
-                refuseOtherTextFields: app.bundleIdentifier == "com.openai.codex",
+                refuseOtherTextFields: PasteTarget.matching(app, in: self.targets)?.refusesOtherTextFields ?? false,
                 stillOnTarget: { !pointerMustStay || WindowHitTest.windowUnder()?.windowID == window.windowID })
             self.pasting = false
             SpeedyShared.log.notice("paste result: \(String(describing: result), privacy: .public)")
@@ -437,8 +477,9 @@ final class ScreenshotPasteController {
             switch result {
             case .pasted:
                 self.disarm("pasted")
-                Toast.show(clipboardReplaced ? "Screenshot pasted into ChatGPT. It is now on your clipboard too"
-                                             : "Screenshot pasted into ChatGPT", seconds: clipboardReplaced ? 3 : 1.4)
+                let name = PasteTarget.matching(app, in: self.targets)?.title ?? "the chat"
+                Toast.show(clipboardReplaced ? "Screenshot pasted into \(name). It is now on your clipboard too"
+                                             : "Screenshot pasted into \(name)", seconds: clipboardReplaced ? 3 : 1.4)
             case .notTrusted:
                 self.disarm("no accessibility")
                 Toast.show("Speedy Bot needs Accessibility permission to paste", seconds: 3)
@@ -448,7 +489,7 @@ final class ScreenshotPasteController {
             case .otherFieldFocused:
                 if fromFile {
                     // The file is still there: stay armed, so clicking the message box and trying again works.
-                    Toast.show("Click the ChatGPT message box first, then try again", seconds: 3.5)
+                    Toast.show("Click the message box first, then try again", seconds: 3.5)
                     self.sawPointerElsewhere = false
                     self.dwellTicks = 0
                     self.startHoverTimer()

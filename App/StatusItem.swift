@@ -34,7 +34,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         switch state.mode {
         case .off: item.button?.toolTip = "Speedy Bot is off"
         case .auto where !state.screenConnectOpen: item.button?.toolTip = "Speedy Bot is waiting for a ScreenConnect session"
-        default: item.button?.toolTip = state.armed ? "Speedy Bot: a screenshot is waiting to go into ChatGPT" : "Speedy Bot is on"
+        default: item.button?.toolTip = state.armed ? "Speedy Bot: a screenshot is waiting to go into \(state.pasteTargetNames)" : "Speedy Bot is on"
         }
     }
 
@@ -48,7 +48,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(choice("Off", symbol: "poweroff", on: state.mode == .off, #selector(setOff)))
         menu.addItem(.separator())
         let features = [
-            toggle("Paste screenshots into ChatGPT", symbol: "photo.on.rectangle.angled", on: state.screenshotPaste, #selector(toggleScreenshot)),
+            toggle("Paste screenshots into \(state.pasteTargetNames)", symbol: "photo.on.rectangle.angled", on: state.screenshotPaste, #selector(toggleScreenshot)),
             toggle("\(state.typingShortcutLabel) types into ScreenConnect", symbol: "keyboard", on: state.remoteTyping, #selector(toggleTyping)),
             toggle("\(state.captureShortcutLabel) captures the ScreenConnect window", symbol: "macwindow.badge.plus", on: state.captureWindow, #selector(toggleCapture)),
             toggle("Save screenshots for documentation", symbol: "folder.badge.plus", on: state.saveScreenshots, #selector(toggleSave)),
@@ -71,17 +71,17 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(action("Quit Speedy Bot", #selector(quit), key: "q"))
     }
 
-    /// A feature switch: the same round blue icon as in the window, instead of a tick.
+    /// A feature switch: a round blue check box like the ones in the window, instead of a tick.
     private func toggle(_ title: String, symbol: String, on: Bool, _ selector: Selector) -> NSMenuItem {
         let i = action(title, selector)
-        i.image = Self.roundIcon(symbol: symbol, on: on, emptyWhenOff: false)
+        i.image = Self.checkIcon(on: on)
         return i
     }
 
-    /// One of several choices: a blue icon for the chosen one, an empty ring for the others.
+    /// One of several choices: the chosen one gets the blue check box, the others an empty ring.
     private func choice(_ title: String, symbol: String, on: Bool, _ selector: Selector) -> NSMenuItem {
         let i = action(title, selector)
-        i.image = Self.roundIcon(symbol: symbol, on: on, emptyWhenOff: true)
+        i.image = Self.checkIcon(on: on)
         return i
     }
 
@@ -91,26 +91,43 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         return i
     }
 
-    /// Drawn on demand, so it follows light and dark mode.
-    private static func roundIcon(symbol: String, on: Bool, emptyWhenOff: Bool, size: CGFloat = 20) -> NSImage {
-        let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
-            let circle = NSBezierPath(ovalIn: rect.insetBy(dx: 0.5, dy: 0.5))
-            if on {
-                NSColor.systemBlue.setFill(); circle.fill()
-            } else if emptyWhenOff {
-                NSColor.secondaryLabelColor.withAlphaComponent(0.6).setStroke(); circle.lineWidth = 1.2; circle.stroke()
-            } else {
-                NSColor.labelColor.withAlphaComponent(0.12).setFill(); circle.fill()
-            }
-            guard on || !emptyWhenOff,
-                  let glyph = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
-                    .withSymbolConfiguration(.init(pointSize: size * 0.48, weight: .semibold))?
-                    .withSymbolConfiguration(.init(paletteColors: [on ? .white : .secondaryLabelColor])) else { return true }
-            let g = glyph.size
-            glyph.draw(in: NSRect(x: rect.midX - g.width / 2, y: rect.midY - g.height / 2, width: g.width, height: g.height))
-            return true
+    private static var iconCache: [Bool: NSImage] = [:]
+
+    /// A round check box: blue with a white tick when on, an empty grey ring when off. Drawn once into a bitmap
+    /// (menus do not always call an image's drawing handler), in colours that read in light and dark menus.
+    private static func checkIcon(on: Bool, size: CGFloat = 18) -> NSImage {
+        if let cached = iconCache[on] { return cached }
+        let scale: CGFloat = 2
+        let px = Int(size * scale)
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: px, pixelsHigh: px, bitsPerSample: 8, samplesPerPixel: 4,
+                                   hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        rep.size = NSSize(width: size, height: size)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        let rect = NSRect(x: 0, y: 0, width: size, height: size)
+        let circle = NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1))
+        if on {
+            NSColor(red: 0.04, green: 0.52, blue: 1.0, alpha: 1).setFill()   // system blue
+            circle.fill()
+            let tick = NSBezierPath()
+            tick.lineWidth = 2.2
+            tick.lineCapStyle = .round
+            tick.lineJoinStyle = .round
+            tick.move(to: NSPoint(x: size * 0.28, y: size * 0.50))
+            tick.line(to: NSPoint(x: size * 0.44, y: size * 0.34))
+            tick.line(to: NSPoint(x: size * 0.73, y: size * 0.66))
+            NSColor.white.setStroke()
+            tick.stroke()
+        } else {
+            NSColor(white: 0.55, alpha: 0.9).setStroke()
+            circle.lineWidth = 1.4
+            circle.stroke()
         }
+        NSGraphicsContext.restoreGraphicsState()
+        let image = NSImage(size: NSSize(width: size, height: size))
+        image.addRepresentation(rep)
         image.isTemplate = false
+        iconCache[on] = image
         return image
     }
 

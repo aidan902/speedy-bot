@@ -4,7 +4,7 @@ A small Mac app for techs who live in ScreenConnect and ChatGPT. It removes thre
 
 ## What it does
 
-1. **Screenshots paste themselves into ChatGPT.** Take a screenshot (Cmd+Shift+3, 4 or 5), then do whatever you chose as the trigger. The screenshot lands in the message box, once per screenshot. The trigger can be:
+1. **Screenshots paste themselves into ChatGPT, Claude or Grok.** Tick the chat apps you use. Take a screenshot (Cmd+Shift+3, 4 or 5), then do whatever you chose as the trigger. The screenshot lands in the message box, once per screenshot. The trigger can be:
    - moving the pointer onto the ChatGPT window (the default, no click, no waiting),
    - a double-click or a triple-click in ChatGPT,
    - a keyboard shortcut you record (a mouse button set to send a keystroke works too).
@@ -57,7 +57,7 @@ Tick **Also do my normal screenshot action** to change none of that. Screenshots
 
 ## Limits
 
-- The ChatGPT **desktop app** only, not chatgpt.com in a browser.
+- The ChatGPT, Claude and Grok **desktop apps** only, not their websites in a browser.
 - Apple's own screenshot shortcuts only, not third-party screenshot tools.
 - Typing covers the characters on this Mac's current keyboard layout. If the clipboard has a character the layout cannot type, nothing is typed and Speedy Bot says which character.
 - Text longer than 500 characters needs Cmd+Shift+V twice.

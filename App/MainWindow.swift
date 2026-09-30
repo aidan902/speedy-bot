@@ -50,7 +50,7 @@ struct MainView: View {
             if !state.accessibilityGranted { permissionCard }
 
             VStack(spacing: 0) {
-                FeatureRow(symbol: "photo.on.rectangle.angled", title: "Paste screenshots into ChatGPT",
+                FeatureRow(symbol: "photo.on.rectangle.angled", title: "Paste screenshots into \(state.pasteTargetNames)",
                            detail: pasteDetail, isOn: $state.screenshotPaste)
                 if state.screenshotPaste { pasteOptions }
                 if state.screenshotPaste || state.saveScreenshots { normalActionOption }
@@ -157,9 +157,9 @@ struct MainView: View {
     private var pasteDetail: String {
         let how: String
         switch state.pasteTrigger {
-        case .hover: how = "move the pointer onto ChatGPT"
-        case .doubleClick: how = "double-click in ChatGPT"
-        case .tripleClick: how = "triple-click in ChatGPT"
+        case .hover: how = "move the pointer onto \(state.pasteTargetNames)"
+        case .doubleClick: how = "double-click in \(state.pasteTargetNames)"
+        case .tripleClick: how = "triple-click in \(state.pasteTargetNames)"
         case .shortcut: how = "press your shortcut"
         }
         return "Take a screenshot, then \(how). It goes into the message box."
@@ -167,6 +167,19 @@ struct MainView: View {
 
     private var pasteOptions: some View {
         VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                Text("Paste into").fixedSize()
+                ForEach(PasteTarget.allCases) { target in
+                    HStack(spacing: 5) {
+                        RoundToggle(symbol: "checkmark", label: target.title, isOn: Binding(
+                            get: { state.pasteTargets.contains(target) },
+                            set: { on in if on { state.pasteTargets.insert(target) } else { state.pasteTargets.remove(target) } }
+                        ), size: 22, emptyWhenOff: true)
+                        Text(target.title).lineLimit(1).fixedSize()
+                    }
+                }
+                Spacer(minLength: 0)
+            }
             HStack {
                 Text("Paste when")
                 Spacer()
@@ -186,7 +199,7 @@ struct MainView: View {
                     Spacer(minLength: 0)
                 }
                 if state.staleDoubleClick {
-                    Text("Moving onto ChatGPT pastes a fresh screenshot. One that has waited longer only pastes when you double-click in ChatGPT.")
+                    Text("Moving onto the chat pastes a fresh screenshot. One that has waited longer only pastes when you double-click in it.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
