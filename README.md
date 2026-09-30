@@ -2,8 +2,6 @@
 
 A small Mac app for techs who live in ScreenConnect and ChatGPT. It removes three bits of repeated hand work.
 
-> **Beta.** The builds on the [Releases page](https://github.com/aidan902/speedy-bot/releases) are signed but not yet notarized by Apple, so macOS blocks the app the first time you open it. After trying to open it, go to System Settings > Privacy & Security and click **Open Anyway**. This note goes away with the first notarized release.
-
 ## What it does
 
 1. **Screenshots paste themselves into ChatGPT.** Take a screenshot (Cmd+Shift+3, 4 or 5), then do whatever you chose as the trigger. The screenshot lands in the message box, once per screenshot. The trigger can be:
