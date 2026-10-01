@@ -9,14 +9,11 @@ public struct ClipboardSnapshot {
 
 @MainActor
 public enum ClipboardSwap {
-    /// Reading clipboard DATA can raise a "paste from other apps" alert on recent macOS. Only read when the
-    /// system will not ask.
+    /// Reading clipboard DATA raises a "paste from other apps" question on recent macOS unless the tech has set
+    /// this app to Allow. Only an explicit Allow counts: the system's default is to ask, every time.
     public static var canReadSilently: Bool {
         if #available(macOS 15.4, *) {
-            switch NSPasteboard.general.accessBehavior {
-            case .ask, .alwaysDeny: return false
-            default: return true
-            }
+            return NSPasteboard.general.accessBehavior == .alwaysAllow
         }
         return true
     }

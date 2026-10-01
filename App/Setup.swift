@@ -69,6 +69,10 @@ final class SetupStatus: ObservableObject {
     func askClipboard() {
         _ = NSPasteboard.general.string(forType: .string)
         clipboard = ClipboardSwap.canReadSilently
+        // The question macOS shows only covers that one read. The lasting answer is a switch in System Settings.
+        if !clipboard, let url = URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Pasteboard") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     /// Everything at once, in the order that reads best: the two folder questions (each waits for an answer),
@@ -142,9 +146,11 @@ struct SetupView: View {
                 PermissionRow(granted: status.documents, title: "Documents folder",
                               detail: "For filing screenshots under SpeedyBot Documentation by incident.",
                               buttonTitle: status.documents ? nil : "Allow") { status.askDocuments() }
-                PermissionRow(granted: status.clipboard, title: "Clipboard",
-                              detail: "To read what you copied and type it into the ScreenConnect session.",
-                              buttonTitle: status.clipboard ? nil : "Allow") { status.askClipboard() }
+                PermissionRow(granted: status.clipboard, title: "Clipboard (Paste from Other Apps)",
+                              detail: status.clipboard
+                                ? "To read what you copied and type it into the ScreenConnect session."
+                                : "To read what you copied. Under Privacy & Security > Paste from Other Apps, set Speedy Bot to Allow, or macOS asks every time.",
+                              buttonTitle: status.clipboard ? nil : "Open Settings") { status.askClipboard() }
             }
             .padding(12)
             .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))

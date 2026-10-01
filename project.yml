@@ -17,8 +17,8 @@ settings:
     PROVISIONING_PROFILE_SPECIFIER: ""
     ENABLE_HARDENED_RUNTIME: YES
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: "0.5.1"
-    CURRENT_PROJECT_VERSION: "11"
+    MARKETING_VERSION: "0.5.2"
+    CURRENT_PROJECT_VERSION: "12"
     GENERATE_INFOPLIST_FILE: NO
     # Xcode's plain `build` action injects com.apple.security.get-task-allow, which notarization rejects.
     CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
