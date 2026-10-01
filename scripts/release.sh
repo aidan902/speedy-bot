@@ -90,7 +90,15 @@ say "identity:  $SIGN_ID  (team $TEAM_ID)"
 # Notary profile — checked BEFORE any work, so a missing credential fails in one second
 # instead of after the build is signed. `history` is a read-only call.
 if [ "$NOTARIZE" = 1 ]; then
-  if ! xcrun notarytool history --keychain-profile "$PROFILE" >/dev/null 2>&1; then
+  if ! NOTARY_CHECK="$(xcrun notarytool history --keychain-profile "$PROFILE" 2>&1 >/dev/null)"; then
+    # The profile exists but Apple said no (an unsigned agreement, a revoked key): say what Apple said.
+    case "$NOTARY_CHECK" in
+      *"No Keychain password item"*) ;;
+      *) die "Apple refused the notary request for profile \"$PROFILE\":
+  $NOTARY_CHECK
+  (A 403 about an agreement means the account holder has to accept the updated agreement at
+  https://developer.apple.com/account before anything can be notarized.)" ;;
+    esac
     cat >&2 <<EOF
 
 FAILED: no working notarytool keychain profile named "$PROFILE".
