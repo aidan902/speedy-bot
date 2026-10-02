@@ -434,6 +434,44 @@ final class ScreenshotPasteController {
         if NSPasteboard.general.changeCount == borrow.count { ClipboardSwap.restore(borrow.snapshot) }
     }
 
+    /// Sends what was just pasted, the moment the chat app will take it: its Send button turns live when the
+    /// picture has finished uploading. An app whose Send button cannot be found gets Return on a timer instead.
+    private func send(in app: NSRunningApplication, hadDraft: Bool) async {
+        let name = PasteTarget.matching(app, in: targets)?.title ?? "the chat"
+        if hadDraft {
+            Toast.show("Screenshot pasted into \(name). You have a message in progress, so it was not sent", seconds: 3.5)
+            return
+        }
+        let pastedAt = ContinuousClock.now
+        let pid = app.processIdentifier
+        let (readiness, button) = await Task.detached { await ChatSend.waitUntilReady(pid: pid, timeout: 20) }.value
+        let waited = Int((ContinuousClock.now - pastedAt) / .milliseconds(1))
+        switch readiness {
+        case .ready:
+            // Still the chat app in front, and nothing typed since the paste?
+            guard await Paster.stillSafeToSend(in: app, pastedAt: pastedAt) else {
+                Toast.show("Screenshot pasted into \(name). Press Return to send it", seconds: 3)
+                return
+            }
+            let pressed = button.map(ChatSend.press) ?? false
+            if !pressed { _ = await Paster.pressReturn(in: app, after: .zero, pastedAt: pastedAt) }
+            SpeedyShared.log.notice("auto-send: sent \(waited) ms after the paste (\(pressed ? "button" : "Return", privacy: .public))")
+            Toast.show("Screenshot sent to \(name)", seconds: 1.6)
+        case .timedOut:
+            SpeedyShared.log.notice("auto-send: the Send button never became ready")
+            Toast.show("Screenshot pasted into \(name). Press Return to send it", seconds: 3)
+        case .unknownApp:
+            // No Send button to watch: fall back to Return after a pause, and once more in case the upload was slow.
+            SpeedyShared.log.notice("auto-send: no Send button found; using timed Return")
+            if await Paster.pressReturn(in: app, after: .milliseconds(2500), pastedAt: pastedAt) {
+                Toast.show("Screenshot sent to \(name)", seconds: 1.6)
+                _ = await Paster.pressReturn(in: app, after: .milliseconds(3500), pastedAt: pastedAt)
+            } else {
+                Toast.show("Screenshot pasted into \(name). Press Return to send it", seconds: 3)
+            }
+        }
+    }
+
     private func paste(into app: NSRunningApplication, window: WindowUnderPointer, armed: Armed, pointerMustStay: Bool, thenSend: Bool = false) {
         pasting = true
         hoverTimer?.invalidate(); hoverTimer = nil
@@ -472,6 +510,13 @@ final class ScreenshotPasteController {
                 }
             }
 
+            // Auto-send must never send a message the tech has half written: if the chat's Send button is already
+            // live before the paste, there is a draft in the box, and the screenshot is only pasted.
+            let pid = app.processIdentifier
+            let hadDraft: Bool = thenSend
+                ? await Task.detached { ChatSend.findSendButton(pid: pid).flatMap(ChatSend.isEnabled) ?? false }.value
+                : false
+
             // Only the current ChatGPT app is known to route a paste to its message box from anywhere in the
             // window; its search and rename fields are the places a picture must not go.
             let result = await Paster.paste(
@@ -500,18 +545,7 @@ final class ScreenshotPasteController {
             switch result {
             case .pasted where thenSend:
                 self.disarm("pasted")
-                let name = PasteTarget.matching(app, in: self.targets)?.title ?? "the chat"
-                // The chat app needs a moment to take the picture in before it will accept Return. Try once, and
-                // once more a little later in case the upload was slow; a second Return on an empty box does nothing.
-                let pastedAt = ContinuousClock.now
-                var sent = await Paster.pressReturn(in: app, after: .milliseconds(2500), pastedAt: pastedAt)
-                if sent {
-                    Toast.show("Screenshot sent to \(name)", seconds: 1.6)
-                    sent = await Paster.pressReturn(in: app, after: .milliseconds(3500), pastedAt: pastedAt)
-                } else {
-                    Toast.show("Screenshot pasted into \(name). Press Return to send it", seconds: 3)
-                }
-                SpeedyShared.log.notice("auto-send finished")
+                await self.send(in: app, hadDraft: hadDraft)
             case .pasted:
                 self.disarm("pasted")
                 let name = PasteTarget.matching(app, in: self.targets)?.title ?? "the chat"

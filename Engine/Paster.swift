@@ -191,6 +191,14 @@ public enum Paster {
         return .pasted
     }
 
+    /// The chat app is still in front, no modifier is held, and the tech has not touched the keyboard since the paste.
+    public static func stillSafeToSend(in app: NSRunningApplication, pastedAt: ContinuousClock.Instant) async -> Bool {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier,
+              !TextTyper.physicalModifiersDown() else { return false }
+        let sincePaste = Double((ContinuousClock.now - pastedAt) / .milliseconds(1)) / 1000
+        return CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .keyDown) > sincePaste
+    }
+
     /// Presses Return in the app a screenshot was just pasted into, to send it. Only if that app is still in
     /// front, no modifier is held, and the tech has not touched the keyboard since the paste (so a message they
     /// have started typing is never sent for them).
