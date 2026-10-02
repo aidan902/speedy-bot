@@ -100,6 +100,7 @@ final class WindowCaptureController {
         do {
             capturing = true
             try task.run()
+            state.noteSessionCapture()
             SpeedyShared.log.notice("capturing the session window")
         } catch {
             capturing = false

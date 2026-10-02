@@ -76,6 +76,8 @@ final class AppState: ObservableObject {
     private(set) lazy var updater = Updater(state: self)
     /// The tech's own shortcut for that capture (nil = the standard ⌘⇧2).
     @Published private(set) var captureShortcut: HotKeySpec?
+    /// A screenshot taken while in a ScreenConnect session is pasted into the chat and sent straight away.
+    @Published var autoSendFromSession: Bool { didSet { changed(SpeedyShared.autoSendFromSessionKey, autoSendFromSession) } }
     /// The chat apps a screenshot may be pasted into. Always at least one.
     @Published var pasteTargets: Set<PasteTarget> {
         didSet {
@@ -130,6 +132,7 @@ final class AppState: ObservableObject {
         keepNormalScreenshots = SpeedyShared.bool(SpeedyShared.keepNormalScreenshotsKey, default: true)
         pasteTrigger = SpeedyShared.defaults.string(forKey: SpeedyShared.pasteTriggerKey).flatMap(PasteTrigger.init(rawValue:)) ?? .hover
         pasteShortcut = HotKeySpec.load(.paste)
+        autoSendFromSession = SpeedyShared.bool(SpeedyShared.autoSendFromSessionKey, default: false)
         let storedTargets = (SpeedyShared.defaults.stringArray(forKey: SpeedyShared.pasteTargetsKey) ?? []).compactMap(PasteTarget.init(rawValue:))
         pasteTargets = storedTargets.isEmpty ? [.chatGPT] : Set(storedTargets)
         typingShortcut = HotKeySpec.load(.typing).flatMap { $0.leavesBareModifierTapOnRemote ? nil : $0 }
@@ -223,6 +226,7 @@ final class AppState: ObservableObject {
     private func apply() {
         screenshot.trigger = pasteTrigger
         screenshot.targets = pasteTargets
+        screenshot.autoSendFromSession = autoSendFromSession
         screenshot.shortcut = pasteShortcut
         screenshot.pasteEnabled = screenshotPaste
         // Resting the pointer pastes a fresh screenshot; an old one then needs a double-click (if the tech wants that).
@@ -251,6 +255,9 @@ final class AppState: ObservableObject {
         typer.setEnabled(active && remoteTyping)
         capture.setEnabled(active && captureWindow && screenConnectOpen)
     }
+
+    /// The capture shortcut was used: the screenshot that follows was taken from the session.
+    func noteSessionCapture() { screenshot.noteSessionCapture() }
 
     /// Where screenshots are being looked for right now (nil when neither screenshot feature is running).
     var screenshotSource: ScreenshotSource? { screenshot.source }

@@ -125,6 +125,11 @@ final class ScreenshotPasteController {
     /// What the tech had on the clipboard before a saved screenshot was put there for pasting.
     private var borrow: (snapshot: ClipboardSnapshot, count: Int, token: Int)?
     private var nextBorrowToken = 1
+    /// A screenshot taken while working in a ScreenConnect session goes into the chat and is SENT, with no
+    /// pointer move, as long as a chat window is open on the same desktop.
+    var autoSendFromSession = false
+    /// The last moment a ScreenConnect session was the app in front (or its window was captured with the shortcut).
+    private var sessionInFrontAt = Date.distantPast
     /// Called for every screenshot that arrives, before it is armed for pasting.
     var onScreenshot: ((ScreenshotRef) -> Void)?
 
@@ -186,7 +191,13 @@ final class ScreenshotPasteController {
         return false
     }
 
+    /// The one-press capture of the session window is, by definition, a screenshot taken from the session.
+    func noteSessionCapture() { sessionInFrontAt = Date() }
+
     private func samplePointer() {
+        if autoSendFromSession, let front = NSWorkspace.shared.frontmostApplication, FrontmostAppGate.isScreenConnect(front) {
+            sessionInFrontAt = Date()
+        }
         if previewDelaysFiles {
             let pending = WindowHitTest.screenshotPreviewVisible()
             if pending != capturePending { capturePending = pending; syncTriggers() }
@@ -294,6 +305,16 @@ final class ScreenshotPasteController {
         onScreenshot?(ref)
         // The picture is on the clipboard within a second of the capture.
         arm(ref, pointerMemory: 1.2)
+        sendIfTakenInSession(within: 1.5)
+    }
+
+    /// The screenshot that has just been armed was taken while the tech was in a ScreenConnect session, and a
+    /// chat window is open on this desktop: paste it there and send it, without waiting for any trigger.
+    private func sendIfTakenInSession(within memory: TimeInterval) {
+        guard autoSendFromSession, let armed, !pasting, Date().timeIntervalSince(sessionInFrontAt) < memory,
+              let target = shortcutTarget() else { return }
+        SpeedyShared.log.notice("screenshot was taken in a ScreenConnect session; pasting and sending")
+        paste(into: target.app, window: target.window, armed: armed, pointerMustStay: false, thenSend: true)
     }
 
     private func fileArrived(_ url: URL) {
@@ -304,6 +325,8 @@ final class ScreenshotPasteController {
         // With the corner preview on, the file is only saved about five seconds after the capture, and by then
         // the tech may already be resting on ChatGPT. Look further back for "the pointer was somewhere else".
         arm(ref, pointerMemory: ScreencapturePrefs.thumbnailOn ? 8 : 1.5)
+        sendIfTakenInSession(within: ScreencapturePrefs.thumbnailOn ? 9 : 2)
+        if pasting { earlyTrigger = nil; return }
 
         // The tech already clicked or pressed the shortcut while the corner preview was holding this file back.
         let early = earlyTrigger
@@ -411,7 +434,7 @@ final class ScreenshotPasteController {
         if NSPasteboard.general.changeCount == borrow.count { ClipboardSwap.restore(borrow.snapshot) }
     }
 
-    private func paste(into app: NSRunningApplication, window: WindowUnderPointer, armed: Armed, pointerMustStay: Bool) {
+    private func paste(into app: NSRunningApplication, window: WindowUnderPointer, armed: Armed, pointerMustStay: Bool, thenSend: Bool = false) {
         pasting = true
         hoverTimer?.invalidate(); hoverTimer = nil
         Task { @MainActor in
@@ -475,6 +498,20 @@ final class ScreenshotPasteController {
             }
             let fromFile = { if case .file = armed.ref { return true } else { return false } }()
             switch result {
+            case .pasted where thenSend:
+                self.disarm("pasted")
+                let name = PasteTarget.matching(app, in: self.targets)?.title ?? "the chat"
+                // The chat app needs a moment to take the picture in before it will accept Return. Try once, and
+                // once more a little later in case the upload was slow; a second Return on an empty box does nothing.
+                let pastedAt = ContinuousClock.now
+                var sent = await Paster.pressReturn(in: app, after: .milliseconds(2500), pastedAt: pastedAt)
+                if sent {
+                    Toast.show("Screenshot sent to \(name)", seconds: 1.6)
+                    sent = await Paster.pressReturn(in: app, after: .milliseconds(3500), pastedAt: pastedAt)
+                } else {
+                    Toast.show("Screenshot pasted into \(name). Press Return to send it", seconds: 3)
+                }
+                SpeedyShared.log.notice("auto-send finished")
             case .pasted:
                 self.disarm("pasted")
                 let name = PasteTarget.matching(app, in: self.targets)?.title ?? "the chat"
