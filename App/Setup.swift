@@ -91,9 +91,9 @@ struct SetupView: View {
     @ObservedObject var status: SetupStatus
     let onDone: () -> Void
 
-    private var chosenApp: Binding<PasteTarget> {
-        Binding(get: { PasteTarget.allCases.first { state.pasteTargets.contains($0) } ?? .chatGPT },
-                set: { state.pasteTargets = [$0] })
+    private func isOn(_ target: PasteTarget) -> Binding<Bool> {
+        Binding(get: { state.pasteTargets.contains(target) },
+                set: { on in if on { state.pasteTargets.insert(target) } else { state.pasteTargets.remove(target) } })
     }
 
     var body: some View {
@@ -111,16 +111,19 @@ struct SetupView: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Which chat app do you use?").font(.headline)
-                HStack {
-                    Picker("Chat app", selection: chosenApp) {
-                        ForEach(PasteTarget.allCases) { Text($0.title).tag($0) }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Which chat apps do you use?").font(.headline)
+                HStack(spacing: 18) {
+                    ForEach(PasteTarget.allCases) { target in
+                        HStack(spacing: 6) {
+                            RoundToggle(symbol: "checkmark", label: target.title, isOn: isOn(target), size: 22, emptyWhenOff: true)
+                            Text(target.title).fixedSize()
+                        }
                     }
-                    .labelsHidden().fixedSize()
-                    Text("Screenshots paste themselves into it. You can tick more than one later.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
                 }
+                Text("Screenshots paste themselves into whichever of these you tick. One or several; at least one stays ticked.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
 
             VStack(alignment: .leading, spacing: 10) {
