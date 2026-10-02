@@ -70,9 +70,9 @@ enum PasteTrigger: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .hover: return "Pointer moves onto ChatGPT"
-        case .doubleClick: return "Double-click in ChatGPT"
-        case .tripleClick: return "Triple-click in ChatGPT"
+        case .hover: return "Pointer moves onto MCP(s)"
+        case .doubleClick: return "Double-click in MCP(s)"
+        case .tripleClick: return "Triple-click in MCP(s)"
         case .shortcut: return "Keyboard shortcut"
         }
     }

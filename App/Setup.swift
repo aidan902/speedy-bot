@@ -112,7 +112,7 @@ struct SetupView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Which chat apps do you use?").font(.headline)
+                Text("Which MCP(s) do you use?").font(.headline)
                 HStack(spacing: 18) {
                     ForEach(PasteTarget.allCases) { target in
                         HStack(spacing: 6) {
