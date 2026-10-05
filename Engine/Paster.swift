@@ -103,6 +103,13 @@ public enum Paster {
         AXUIElementSetAttributeValue(appElement(pid), kAXFrontmostAttribute as CFString, kCFBooleanTrue)
     }
 
+    /// Puts the app the tech was working in back in front (after a paste that had to bring another app forward).
+    public static func bringBack(_ app: NSRunningApplication) {
+        guard !app.isTerminated else { return }
+        AXUIElementSetAttributeValue(appElement(app.processIdentifier), kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier != app.processIdentifier { activateViaWorkspace(app) }
+    }
+
     /// LaunchServices is allowed to activate on behalf of a background app, which
     /// NSRunningApplication.activate() is not guaranteed to do on macOS 14+.
     static func activateViaWorkspace(_ app: NSRunningApplication) {

@@ -23,6 +23,8 @@ enum SpeedyShared {
     static let pasteTargetsKey = "pasteTargets"
     /// A screenshot taken while in a ScreenConnect session is pasted into the chat and sent, with no trigger.
     static let autoSendFromSessionKey = "autoSendFromSession"
+    /// Window captures go into the MCP's message box without being sent, so several can be gathered.
+    static let multiCaptureKey = "multiCapture"
     /// The first-run setup window has been dismissed.
     static let setupDoneKey = "setupDone"
     /// "on", "off" or "auto" (only while a ScreenConnect session is open). `enabled` mirrors "not off" for the control.

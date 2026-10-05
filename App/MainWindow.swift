@@ -66,11 +66,22 @@ struct MainView: View {
                            detail: "One press takes a screenshot of the whole session window, no dragging. It is then handled like any other screenshot. macOS asks for Screen Recording permission the first time.",
                            isOn: $state.captureWindow)
                 if state.captureWindow {
-                    HStack {
-                        Text("Shortcut")
-                        Spacer()
-                        ShortcutRecorder(label: state.captureShortcutLabel,
-                                         resetLabel: state.captureShortcut == nil ? nil : WindowCaptureController.defaultShortcut.label) { state.setCaptureShortcut($0) }
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Shortcut")
+                            Spacer()
+                            ShortcutRecorder(label: state.captureShortcutLabel,
+                                             resetLabel: state.captureShortcut == nil ? nil : WindowCaptureController.defaultShortcut.label) { state.setCaptureShortcut($0) }
+                        }
+                        HStack(spacing: 8) {
+                            RoundToggle(symbol: "checkmark", label: "Multi-capture: load into the MCP, don't send", isOn: $state.multiCapture, size: 22, emptyWhenOff: true)
+                            Text("Multi-capture: load into the MCP, don't send").lineLimit(1).minimumScaleFactor(0.85)
+                            Spacer(minLength: 0)
+                        }
+                        if state.multiCapture {
+                            Text("Each \(state.captureShortcutLabel) capture goes straight into the message box of \(state.pasteTargetNames) and focus comes back to ScreenConnect, so you can gather several, then send them yourself.")
+                                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.leading, inset).padding(.trailing, 12).padding(.bottom, 12)
                 }

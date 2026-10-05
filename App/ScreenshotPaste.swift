@@ -130,6 +130,10 @@ final class ScreenshotPasteController {
     var autoSendFromSession = false
     /// The last moment a ScreenConnect session was the app in front (or its window was captured with the shortcut).
     private var sessionInFrontAt = Date.distantPast
+    /// Multi-capture: every window capture (the ⇧⌘2 shortcut) goes straight into the MCP's message box, NOT sent,
+    /// and focus comes back to the session, so several captures can be gathered into one message.
+    var multiCapture = false
+    private var sessionCaptureAt = Date.distantPast
     /// Called for every screenshot that arrives, before it is armed for pasting.
     var onScreenshot: ((ScreenshotRef) -> Void)?
 
@@ -192,7 +196,7 @@ final class ScreenshotPasteController {
     }
 
     /// The one-press capture of the session window is, by definition, a screenshot taken from the session.
-    func noteSessionCapture() { sessionInFrontAt = Date() }
+    func noteSessionCapture() { sessionInFrontAt = Date(); sessionCaptureAt = Date() }
 
     private func samplePointer() {
         if autoSendFromSession, let front = NSWorkspace.shared.frontmostApplication, FrontmostAppGate.isScreenConnect(front) {
@@ -311,10 +315,17 @@ final class ScreenshotPasteController {
     /// The screenshot that has just been armed was taken while the tech was in a ScreenConnect session, and a
     /// chat window is open on this desktop: paste it there and send it, without waiting for any trigger.
     private func sendIfTakenInSession(within memory: TimeInterval) {
-        guard autoSendFromSession, let armed, !pasting, Date().timeIntervalSince(sessionInFrontAt) < memory,
-              let target = shortcutTarget() else { return }
+        guard let armed, !pasting else { return }
+        let session = NSWorkspace.shared.frontmostApplication.flatMap { FrontmostAppGate.isScreenConnect($0) ? $0 : nil }
+        // A window capture with multi-capture on: into the message box, not sent, and back to the session.
+        if multiCapture, Date().timeIntervalSince(sessionCaptureAt) < 4, let target = shortcutTarget() {
+            SpeedyShared.log.notice("window capture; pasting without sending (multi-capture)")
+            paste(into: target.app, window: target.window, armed: armed, pointerMustStay: false, returnTo: session)
+            return
+        }
+        guard autoSendFromSession, Date().timeIntervalSince(sessionInFrontAt) < memory, let target = shortcutTarget() else { return }
         SpeedyShared.log.notice("screenshot was taken in a ScreenConnect session; pasting and sending")
-        paste(into: target.app, window: target.window, armed: armed, pointerMustStay: false, thenSend: true)
+        paste(into: target.app, window: target.window, armed: armed, pointerMustStay: false, thenSend: true, returnTo: session)
     }
 
     private func fileArrived(_ url: URL) {
@@ -472,7 +483,8 @@ final class ScreenshotPasteController {
         }
     }
 
-    private func paste(into app: NSRunningApplication, window: WindowUnderPointer, armed: Armed, pointerMustStay: Bool, thenSend: Bool = false) {
+    private func paste(into app: NSRunningApplication, window: WindowUnderPointer, armed: Armed, pointerMustStay: Bool,
+                       thenSend: Bool = false, returnTo: NSRunningApplication? = nil) {
         pasting = true
         hoverTimer?.invalidate(); hoverTimer = nil
         Task { @MainActor in
@@ -546,11 +558,19 @@ final class ScreenshotPasteController {
             case .pasted where thenSend:
                 self.disarm("pasted")
                 await self.send(in: app, hadDraft: hadDraft)
+                if let returnTo { Paster.bringBack(returnTo) }
             case .pasted:
                 self.disarm("pasted")
                 let name = PasteTarget.matching(app, in: self.targets)?.title ?? "the chat"
-                Toast.show(clipboardReplaced ? "Screenshot pasted into \(name). It is now on your clipboard too"
-                                             : "Screenshot pasted into \(name)", seconds: clipboardReplaced ? 3 : 1.4)
+                if let returnTo {
+                    // Multi-capture: give the MCP a moment to take the picture, then back to the session.
+                    try? await Task.sleep(for: .milliseconds(350))
+                    Paster.bringBack(returnTo)
+                    Toast.show("Added to the message in \(name). Send it when you have them all", seconds: 2)
+                } else {
+                    Toast.show(clipboardReplaced ? "Screenshot pasted into \(name). It is now on your clipboard too"
+                                                 : "Screenshot pasted into \(name)", seconds: clipboardReplaced ? 3 : 1.4)
+                }
             case .notTrusted:
                 self.disarm("no accessibility")
                 Toast.show("Speedy Bot needs Accessibility permission to paste", seconds: 3)

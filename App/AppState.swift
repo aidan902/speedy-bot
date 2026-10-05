@@ -78,6 +78,8 @@ final class AppState: ObservableObject {
     @Published private(set) var captureShortcut: HotKeySpec?
     /// A screenshot taken while in a ScreenConnect session is pasted into the chat and sent straight away.
     @Published var autoSendFromSession: Bool { didSet { changed(SpeedyShared.autoSendFromSessionKey, autoSendFromSession) } }
+    /// Window captures (⇧⌘2) go straight into the MCP's message box, not sent, so several can go in one message.
+    @Published var multiCapture: Bool { didSet { changed(SpeedyShared.multiCaptureKey, multiCapture) } }
     /// The chat apps a screenshot may be pasted into. Always at least one.
     @Published var pasteTargets: Set<PasteTarget> {
         didSet {
@@ -133,6 +135,7 @@ final class AppState: ObservableObject {
         pasteTrigger = SpeedyShared.defaults.string(forKey: SpeedyShared.pasteTriggerKey).flatMap(PasteTrigger.init(rawValue:)) ?? .hover
         pasteShortcut = HotKeySpec.load(.paste)
         autoSendFromSession = SpeedyShared.bool(SpeedyShared.autoSendFromSessionKey, default: false)
+        multiCapture = SpeedyShared.bool(SpeedyShared.multiCaptureKey, default: false)
         let storedTargets = (SpeedyShared.defaults.stringArray(forKey: SpeedyShared.pasteTargetsKey) ?? []).compactMap(PasteTarget.init(rawValue:))
         pasteTargets = storedTargets.isEmpty ? [.chatGPT] : Set(storedTargets)
         typingShortcut = HotKeySpec.load(.typing).flatMap { $0.leavesBareModifierTapOnRemote ? nil : $0 }
@@ -227,6 +230,7 @@ final class AppState: ObservableObject {
         screenshot.trigger = pasteTrigger
         screenshot.targets = pasteTargets
         screenshot.autoSendFromSession = autoSendFromSession
+        screenshot.multiCapture = multiCapture
         screenshot.shortcut = pasteShortcut
         screenshot.pasteEnabled = screenshotPaste
         // Resting the pointer pastes a fresh screenshot; an old one then needs a double-click (if the tech wants that).
