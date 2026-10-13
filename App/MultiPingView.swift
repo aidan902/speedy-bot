@@ -175,13 +175,25 @@ struct MultiPingView: View {
                     .help("Doubles the pauses while windows open, for a machine that takes its time.")
             }
             HStack(spacing: 8) {
-                Text("Open each window through")
-                Picker("Open each window through", selection: $state.openVia) {
+                Text("Arrange the windows")
+                Picker("Arrange the windows", selection: $state.tile) {
+                    ForEach(TileLayout.allCases) { Text($0.title).tag($0) }
+                }
+                .labelsHidden().fixedSize()
+                Spacer(minLength: 16)
+                Text("Open them through")
+                Picker("Open them through", selection: $state.openVia) {
                     ForEach(OpenVia.allCases) { Text($0.title).tag($0) }
                 }
                 .labelsHidden().fixedSize()
             }
-            Text(state.openerNote).font(.caption).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(state.openerNote).font(.caption).foregroundStyle(.tertiary)
+                if !state.ready.isEmpty {
+                    Text(state.launchLine).font(.system(.caption, design: .monospaced)).foregroundStyle(.tertiary)
+                        .lineLimit(3).truncationMode(.tail).textSelection(.enabled)
+                }
+            }
             if !state.status.isEmpty {
                 Text(state.status).font(.callout).foregroundStyle(state.busy ? Color.fmGreen : Color.secondary).fixedSize(horizontal: false, vertical: true)
             }
@@ -209,7 +221,7 @@ struct MultiPingView: View {
                         .help(included ? "Ticked: this device gets a window. Untick to leave it out." : "Left out this time.")
                     if let ip = t.ip {
                         Text(ip.description).font(.system(.body, design: .monospaced)).frame(width: 120, alignment: .leading)
-                        Picker("Command for \(ip)", selection: commandBinding(t)) {
+                        Picker("Command for \(ip.description)", selection: commandBinding(t)) {
                             ForEach(PingCommand.allCases) { Text($0.shortTitle).tag($0) }
                         }
                         .labelsHidden().frame(width: 112).controlSize(.small)

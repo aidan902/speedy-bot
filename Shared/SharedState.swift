@@ -40,6 +40,8 @@ enum SpeedyShared {
     static let mpApplyToAllKey = "mpApplyToAll"
     static let mpRowCommandsKey = "mpRowCommands"
     static let mpExcludedKey = "mpExcluded"
+    /// How the opened windows are arranged on the remote desktop: "off", "sideBySide" or "stacked".
+    static let mpTileKey = "mpTile"
     /// The UniFi controller (the API key itself is in the keychain).
     static let unifiURLKey = "unifiURL"
     static let unifiTrustKey = "unifiTrustCertificate"

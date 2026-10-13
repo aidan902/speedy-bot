@@ -34,6 +34,9 @@ public struct TypingOptions: Sendable {
     public var keyHoldMicros: UInt32 = 10_000
     public var interKeyMicros: UInt32 = 20_000
     public static var fast: TypingOptions { var o = TypingOptions(); o.keyHoldMicros = 8_000; o.interKeyMicros = 12_000; return o }
+    /// ~90 characters a second, for command lines typed into a Run dialog or a shell prompt (proven to keep
+    /// up through ScreenConnect at 50/s; a dropped character here costs one re-run, not a password).
+    public static var turbo: TypingOptions { var o = TypingOptions(); o.keyHoldMicros = 5_000; o.interKeyMicros = 6_000; return o }
     public init() {}
 }
 

@@ -151,6 +151,25 @@ if CommandLine.arguments.contains("--selftest") {
     expect("custom no placeholder", PingCommand.custom.line(ip: "1.2.3.4", port: 443, custom: "tracert"), "tracert 1.2.3.4")
     expect("session name", SessionWindow(pid: 1, windowID: 1, title: "ScreenConnect - FLC-JACKSON - Connected", bounds: .zero).name, "FLC-JACKSON")
     expect("unifi url", UniFiConfig.normalize("unifi.fm.net/"), "https://unifi.fm.net")
+    let w = { (ip: String, c: PingCommand) in LaunchScript.Window(ip: IPv4(ip)!, command: c) }
+    expect("launch one", LaunchScript.build([w("172.16.37.4", .pingForever)], port: 443, custom: "", tile: .off, forRunDialog: true),
+           "powershell -noe -c \"ping -t 172.16.37.4\"")
+    expect("launch loop", LaunchScript.build([w("172.16.37.4", .pingForever), w("172.16.37.5", .pingForever), w("172.16.37.9", .pingForever)], port: 443, custom: "", tile: .off, forRunDialog: true),
+           "powershell -w hidden -c \"foreach($i in 4,5,9){start powershell ('-noe -c ping -t 172.16.37.'+$i)}\"")
+    expect("launch mixed", LaunchScript.build([w("172.16.37.4", .pingForever), w("172.16.37.5", .tracert), w("10.0.0.7", .pingForever)], port: 443, custom: "", tile: .off, forRunDialog: true),
+           "powershell -w hidden -c \"start powershell '-noe -c ping -t 172.16.37.4';start powershell '-noe -c tracert -d 172.16.37.5';start powershell '-noe -c ping -t 10.0.0.7'\"")
+    expect("launch arp loop", LaunchScript.statements([w("172.16.37.4", .arp), w("172.16.37.5", .arp)], port: 443, custom: "").joined(separator: ";"),
+           "foreach($i in 4,5){start powershell ('-noe -c ping -n 1 172.16.37.'+$i+' | Out-Null; arp -a 172.16.37.'+$i)}")
+    expect("launch custom quote", LaunchScript.statements([w("172.16.37.4", .custom)], port: 443, custom: "ping -t {ip} -l 1400 'x'").joined(separator: ";"),
+           "start powershell '-noe -c ping -t 172.16.37.4 -l 1400 ''x'''")
+    let tiled = LaunchScript.build([w("172.16.37.4", .ping), w("172.16.37.5", .ping)], port: 443, custom: "", tile: .stacked, forRunDialog: true)
+    expect("tile wraps", String(tiled.prefix(25)), "powershell -w hidden -c \"")
+    expect("tile baseline", tiled.contains(LaunchScript.handles) ? "yes" : "no", "yes")
+    expect("tile call", tiled.contains("-lt 2 -and $t -lt 40);[U.W]::TileWindows(0,1,0,$n.Count,[IntPtr[]]$n)\"") ? "yes" : "no", "yes")
+    expect("tile no double quotes inside", tiled.dropFirst(25).dropLast().contains("\"") ? "has quotes" : "clean", "clean")
+    expect("tile no percent signs", tiled.contains("%") ? "has percent" : "clean", "clean")
+    expect("prompt form", LaunchScript.build([w("172.16.37.4", .ping)], port: 443, custom: "", tile: .off, forRunDialog: false),
+           "start powershell '-noe -c ping 172.16.37.4'")
     for f in failures { print("FAIL \(f)") }
     print("multi ping checks: \(failures.isEmpty ? "all passed" : "\(failures.count) failed")")
     exit(map == nil || !failures.isEmpty ? 1 : 0)

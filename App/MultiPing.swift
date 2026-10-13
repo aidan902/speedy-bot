@@ -111,6 +111,86 @@ enum OpenVia: String, CaseIterable, Identifiable {
     }
 }
 
+/// How the new windows are arranged on the remote desktop once they are open.
+enum TileLayout: String, CaseIterable, Identifiable {
+    case sideBySide, stacked, off
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .sideBySide: return "Side by side"
+        case .stacked: return "Stacked"
+        case .off: return "Leave them where they open"
+        }
+    }
+    /// user32 TileWindows: MDITILE_VERTICAL = 0 (side by side), MDITILE_HORIZONTAL = 1 (stacked).
+    var how: Int { self == .stacked ? 1 : 0 }
+}
+
+/// The one PowerShell line that opens every window (and arranges them). Typed once into the Run dialog,
+/// instead of a Win+R round trip per window, so five windows take the time of one.
+enum LaunchScript {
+    struct Window: Equatable {
+        let ip: IPv4
+        let command: PingCommand
+    }
+
+    /// Stands in for the last octet while a command line is turned into a loop body.
+    private static let octet = "\u{1}"
+
+    private static func quoted(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "''") + "'" }
+
+    /// `'-noe -c ping -t 172.16.37.'+$i` for a line that has the last octet in it (once or several times).
+    private static func loopArgument(_ text: String) -> String {
+        var expr = text.components(separatedBy: octet).map(quoted).joined(separator: "+$i+")
+        if expr.hasSuffix("+''") { expr.removeLast(3) }
+        return expr
+    }
+
+    /// The statements that open the windows: one `start powershell` per lone address, a `foreach` over the
+    /// last octets for addresses that share the first three and the same command.
+    static func statements(_ windows: [Window], port: Int, custom: String) -> [String] {
+        var order: [String] = []
+        var octets: [String: [Int]] = [:]
+        for w in windows {
+            let prefix = w.ip.octets.prefix(3).map(String.init).joined(separator: ".")
+            let template = w.command.line(ip: prefix + "." + octet, port: port, custom: custom)
+            if octets[template] == nil { order.append(template); octets[template] = [] }
+            octets[template]!.append(w.ip.octets[3])
+        }
+        return order.map { template in
+            let list = octets[template]!
+            if list.count == 1 {
+                return "start powershell " + quoted("-noe -c " + template.replacingOccurrences(of: octet, with: String(list[0])))
+            }
+            return "foreach($i in \(list.map(String.init).joined(separator: ","))){start powershell (\(loopArgument("-noe -c " + template)))}"
+        }
+    }
+
+    /// Finds the windows that appeared since `$b` was taken (both a plain console and a Windows Terminal
+    /// window count), then tiles exactly those. No double quotes anywhere (the whole line travels inside
+    /// `-c "…"`) and no percent signs (the Run dialog expands %NAME% pairs).
+    static func arrange(count: Int, how: Int) -> String {
+        "$q=[char]34;Add-Type -Name W -Namespace U -Mem ('[DllImport('+$q+'user32.dll'+$q+')]public static extern int TileWindows(IntPtr p,int h,IntPtr r,int c,IntPtr[] k);');"
+        + "$t=0;do{sleep -m 300;$n=@(&$f|?{$b -notcontains $_});$t++}while($n.Count -lt \(count) -and $t -lt 40);"
+        + "[U.W]::TileWindows(0,\(how),0,$n.Count,[IntPtr[]]$n)"
+    }
+
+    static let handles = "$f={gps powershell,WindowsTerminal -ea 0|select -exp MainWindowHandle|?{$_ -ne 0}};$b=@(&$f);"
+
+    /// The line as typed. `forRunDialog` wraps it in `powershell … -c "…"`; otherwise it is typed as is into a
+    /// PowerShell prompt.
+    static func build(_ windows: [Window], port: Int, custom: String, tile: TileLayout, forRunDialog: Bool) -> String {
+        guard !windows.isEmpty else { return "" }
+        if tile == .off, windows.count == 1, forRunDialog {
+            let line = windows[0].command.line(ip: windows[0].ip.description, port: port, custom: custom)
+            return "powershell -noe -c \"\(line)\""
+        }
+        var body = statements(windows, port: port, custom: custom).joined(separator: ";")
+        if tile != .off { body = handles + body + ";" + arrange(count: windows.count, how: tile.how) }
+        return forRunDialog ? "powershell -w hidden -c \"\(body)\"" : body
+    }
+}
+
 /// One address the tech typed, resolved against the remote machine's network.
 struct PingTarget: Identifiable, Equatable {
     let input: String
@@ -204,6 +284,8 @@ final class MultiPingState: ObservableObject {
     @Published var slowRemote: Bool { didSet { store(slowRemote, SpeedyShared.mpSlowKey) } }
     /// The command above goes to every device; off, each device row has its own menu.
     @Published var applyToAll: Bool { didSet { store(applyToAll, SpeedyShared.mpApplyToAllKey) } }
+    /// How the windows are arranged once open.
+    @Published var tile: TileLayout { didSet { store(tile.rawValue, SpeedyShared.mpTileKey) } }
     /// A device's own command, by address (used while Apply to all is off).
     @Published private(set) var rowCommands: [String: PingCommand] {
         didSet { store(rowCommands.mapValues(\.rawValue), SpeedyShared.mpRowCommandsKey) }
@@ -245,6 +327,7 @@ final class MultiPingState: ObservableObject {
         openVia = d.string(forKey: SpeedyShared.mpOpenViaKey).flatMap(OpenVia.init(rawValue:)) ?? .runDialog
         slowRemote = SpeedyShared.bool(SpeedyShared.mpSlowKey, default: false)
         applyToAll = SpeedyShared.bool(SpeedyShared.mpApplyToAllKey, default: true)
+        tile = d.string(forKey: SpeedyShared.mpTileKey).flatMap(TileLayout.init(rawValue:)) ?? .sideBySide
         rowCommands = (d.dictionary(forKey: SpeedyShared.mpRowCommandsKey) as? [String: String] ?? [:]).compactMapValues(PingCommand.init(rawValue:))
         excluded = Set(d.stringArray(forKey: SpeedyShared.mpExcludedKey) ?? [])
         loading = false
@@ -339,28 +422,34 @@ final class MultiPingState: ObservableObject {
         command(for: target).line(ip: target.ip?.description ?? "", port: port, custom: custom)
     }
 
+    /// The exact line that will be typed, for the page.
+    var launchLine: String {
+        LaunchScript.build(ready.map { LaunchScript.Window(ip: $0.ip!, command: command(for: $0)) },
+                           port: port, custom: custom, tile: tile, forRunDialog: openVia == .runDialog)
+    }
+
     /// What the tech chose, written the way it is typed into the session.
     var openerNote: String {
         switch openVia {
-        case .runDialog: return "Each line is opened with Win+R as:  powershell -NoExit -Command \"…\""
-        case .currentWindow: return "Each line is typed into the PowerShell window in front as:  Start-Process powershell '-NoExit -Command …'"
+        case .runDialog: return "One line opens every window, typed into the Run dialog (Win+R):"
+        case .currentWindow: return "One line opens every window, typed into the PowerShell window in front:"
         }
     }
 
+    /// The key pace for command lines: faster than clipboard typing when the tech has chosen Fast.
+    private var pace: TypingOptions { app.fastTyping ? .turbo : TypingOptions() }
+
     // MARK: sending
 
-    private func steps(for line: String, lastWait: Bool) -> [RemoteShell.Step] {
+    /// Win+R, the line, Return. Forward Delete first drops the tail the Run dialog may have completed inline.
+    private func steps(typing line: String) -> [RemoteShell.Step] {
         let slow = slowRemote ? 2 : 1
         switch openVia {
         case .runDialog:
-            // The Run dialog completes earlier entries inline; Forward Delete drops a completed tail before Return.
-            return [.chord("r", command: true, shift: false), .wait(ms: 800 * slow),
-                    .text("powershell -NoExit -Command \"\(line)\""), .key(CGKeyCode(kVK_ForwardDelete)), .key(CGKeyCode(kVK_Return)),
-                    .wait(ms: lastWait ? 1800 * slow : 200)]
+            return [.chord("r", command: true, shift: false), .wait(ms: 600 * slow),
+                    .text(line), .key(CGKeyCode(kVK_ForwardDelete)), .key(CGKeyCode(kVK_Return))]
         case .currentWindow:
-            let quoted = line.replacingOccurrences(of: "'", with: "''")
-            return [.text("Start-Process powershell '-NoExit -Command \(quoted)'"), .key(CGKeyCode(kVK_Return)),
-                    .wait(ms: lastWait ? 1200 * slow : 200)]
+            return [.text(line), .key(CGKeyCode(kVK_Return))]
         }
     }
 
@@ -370,22 +459,20 @@ final class MultiPingState: ObservableObject {
         guard session.connected else { status = "\(session.name) is \(session.state?.lowercased() ?? "not connected"). Reconnect the session first."; return }
         let items = ready
         guard !items.isEmpty else { status = "Type at least one address first."; return }
-        var groups: [RemoteShell.Group] = []
-        for (i, t) in items.enumerated() {
-            let line = self.line(for: t)
-            groups.append(RemoteShell.Group(label: "Window \(i + 1) of \(items.count): \(line)",
-                                            steps: steps(for: line, lastWait: i < items.count - 1)))
-        }
+        let line = launchLine
+        let what = "\(items.count) window\(items.count == 1 ? "" : "s")"
+        let group = RemoteShell.Group(label: "Opening \(what) in \(session.name)…", steps: steps(typing: line))
         busy = true
         status = "Starting…"
-        SpeedyShared.log.notice("multi ping: \(items.count) window(s), \(self.applyToAll ? self.command.rawValue : "per device", privacy: .public), via \(self.openVia.rawValue, privacy: .public)")
-        shell.run(groups, in: session, fast: app.fastTyping, progress: { [weak self] label in
+        SpeedyShared.log.notice("multi ping: \(items.count) window(s), \(self.applyToAll ? self.command.rawValue : "per device", privacy: .public), via \(self.openVia.rawValue, privacy: .public), tile \(self.tile.rawValue, privacy: .public), \(line.count) characters")
+        shell.run([group], in: session, pace: pace, progress: { [weak self] label in
             self?.status = label
             Toast.show(label, seconds: 2.5)
         }, completion: { [weak self] outcome in
             guard let self else { return }
             self.busy = false
-            self.status = Self.describe(outcome, done: "Opened \(items.count) window\(items.count == 1 ? "" : "s") in \(session.name).")
+            let arranged = self.tile == .off ? "" : " They tile \(self.tile == .stacked ? "stacked" : "side by side") once they are all open."
+            self.status = Self.describe(outcome, done: "Sent: \(what) opening in \(session.name).\(arranged)")
             if outcome != .done { Toast.show(self.status, seconds: 3) }
         })
     }
@@ -410,21 +497,13 @@ final class MultiPingState: ObservableObject {
 
     func readFromSession() {
         guard !busy, let session else { return }
-        let slow = slowRemote ? 2 : 1
-        let steps: [RemoteShell.Step]
-        switch openVia {
-        case .runDialog:
-            steps = [.chord("r", command: true, shift: false), .wait(ms: 800 * slow),
-                     .text("powershell -NoExit -Command \"\(SessionProbe.script)\""), .key(CGKeyCode(kVK_ForwardDelete)), .key(CGKeyCode(kVK_Return))]
-        case .currentWindow:
-            steps = [.text(SessionProbe.script), .key(CGKeyCode(kVK_Return))]
-        }
+        let steps = self.steps(typing: openVia == .runDialog ? "powershell -noe -c \"\(SessionProbe.script)\"" : SessionProbe.script)
         busy = true
         probing = true
         probeStatus = "Asking \(session.name) for its address…"
         let watch = SessionProbe.Watch(windowID: session.windowID)   // before the typing: it watches the clipboard
         probeTask?.cancel()
-        shell.run([RemoteShell.Group(label: "Reading the remote machine's address…", steps: steps)], in: session, fast: app.fastTyping,
+        shell.run([RemoteShell.Group(label: "Reading the remote machine's address…", steps: steps)], in: session, pace: pace,
                   progress: { label in Toast.show(label, seconds: 2) },
                   completion: { [weak self] outcome in
             guard let self else { return }

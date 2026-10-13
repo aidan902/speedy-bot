@@ -111,7 +111,7 @@ final class RemoteShell {
 
     func cancel() { cancelled.set(true) }
 
-    func run(_ groups: [Group], in session: SessionWindow, fast: Bool,
+    func run(_ groups: [Group], in session: SessionWindow, pace: TypingOptions,
              progress: @escaping @MainActor @Sendable (String) -> Void,
              completion: @escaping @MainActor @Sendable (Outcome) -> Void) {
         guard !running else { return }
@@ -122,7 +122,7 @@ final class RemoteShell {
 
         // Everything is checked for typeability before a single key goes out: a command with one character
         // missing is a different command.
-        let options = fast ? TypingOptions.fast : TypingOptions()
+        let options = pace
         var prepared: [(label: String, steps: [PreparedStep])] = []
         for g in groups {
             var steps: [PreparedStep] = []
