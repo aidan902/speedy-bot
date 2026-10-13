@@ -10,12 +10,11 @@ enum SessionProbe {
     static let marker = "SPEEDYBOT"
 
     /// Windows PowerShell 5 (Windows 8 / Server 2012 and later). Single quotes only, so it survives being
-    /// handed over as `powershell -Command "…"` by the Run dialog, and no character outside plain ASCII.
+    /// handed over as `powershell -c "…"`, and no character outside plain ASCII.
     static let script =
-        "$c=Get-NetIPConfiguration|?{$_.IPv4DefaultGateway}|select -First 1;"
-        + "$a=Get-NetIPAddress -InterfaceIndex $c.InterfaceIndex -AddressFamily IPv4|select -First 1;"
+        "$c=(Get-NetIPConfiguration|?{$_.IPv4DefaultGateway})[0];$a=$c.IPv4Address[0];"
         + "$l='\(marker) '+$a.IPAddress+'/'+$a.PrefixLength+' gw='+$c.IPv4DefaultGateway.NextHop"
-        + "+' host='+$env:COMPUTERNAME+' pub='+$(try{irm https://api.ipify.org -TimeoutSec 4}catch{'none'});"
+        + "+' host='+$env:COMPUTERNAME+' pub='+$(try{irm http://api.ipify.org -TimeoutSec 4}catch{''});"
         + "Set-Clipboard $l;$l"
 
     struct Reading: Equatable, Sendable {
@@ -26,13 +25,16 @@ enum SessionProbe {
         let publicIP: String?
     }
 
-    /// The marker line out of any text (clipboard or screen reading). The address and prefix must be there;
-    /// the rest is optional.
+    /// The marker line out of any text (clipboard or screen reading). The address and prefix must follow the
+    /// marker; the rest is optional. Screen reading can split one printed line into several, so the text
+    /// is searched as a whole, within a short distance of the marker.
     static func parse(_ text: String) -> Reading? {
-        for raw in text.components(separatedBy: .newlines) {
-            let line = raw.replacingOccurrences(of: "SPEEDY BOT", with: marker)
-            guard let r = line.range(of: marker) else { continue }
-            let rest = String(line[r.upperBound...])
+        let flat = text.replacingOccurrences(of: "SPEEDY BOT", with: marker)
+            .components(separatedBy: .newlines).joined(separator: " ")
+        var from = flat.startIndex
+        while let r = flat.range(of: marker, range: from..<flat.endIndex) {
+            from = r.upperBound
+            let rest = String(flat[r.upperBound...].prefix(220))
             guard let m = rest.firstMatch(of: /(\d{1,3}(?:\.\d{1,3}){3})\s*\/\s*(\d{1,2})/),
                   let ip = IPv4(String(m.1)), let prefix = Int(m.2), (8...30).contains(prefix) else { continue }
             func field(_ name: String) -> String? {
@@ -45,6 +47,15 @@ enum SessionProbe {
             return Reading(ip: ip, prefix: prefix, gateway: gw, host: field("host"), publicIP: pub)
         }
         return nil
+    }
+
+    /// Four digits that read well off a screen (no 0/O or 1/l).
+    static func token() -> String { String((0..<4).map { _ in "23456789".randomElement()! }) }
+
+    /// A marker such as "SB7342 OPEN" is on screen (spacing as the recognizer saw it).
+    static func marker(_ text: String, token: String, word: String) -> Bool {
+        guard let re = try? Regex("(?i)SB\\s*\(token)\\s*\(word)") else { return false }
+        return text.firstMatch(of: re) != nil
     }
 
     /// Reads the text shown in a window off the screen (Screen Recording permission). Nil when the capture
@@ -74,12 +85,12 @@ enum SessionProbe {
         }
     }
 
-    /// Waits for the marker line: on the clipboard (ScreenConnect shares the remote clipboard) or on screen.
-    /// Made BEFORE the script is typed, so a clipboard change during the typing is noticed too.
+    /// Watches the session for an answer: on the clipboard (ScreenConnect shares the remote clipboard) and
+    /// on the screen. Made BEFORE anything is typed, so a clipboard change during the typing counts too.
     @MainActor
     final class Watch {
         private let windowID: CGWindowID
-        private let baseline = NSPasteboard.general.changeCount
+        private var baseline = NSPasteboard.general.changeCount
         private var lastRead = -1
         private var cancelled = false
 
@@ -87,22 +98,29 @@ enum SessionProbe {
 
         func cancel() { cancelled = true }
 
-        /// The reading and where it came from ("clipboard" or "screen"), or nil after `timeout` seconds.
-        func result(timeout: TimeInterval) async -> (reading: Reading, via: String)? {
+        /// This app changed the clipboard itself: that change is not an answer.
+        func ignoreClipboardNow() { baseline = NSPasteboard.general.changeCount; lastRead = -1 }
+
+        /// The first value `match` makes out of the clipboard text or the screen text, and where it came
+        /// from ("clipboard" or "screen"); nil after `timeout` seconds.
+        func wait<T>(timeout: TimeInterval, clipboard: Bool, every: TimeInterval = 0.8,
+                     _ match: (String) -> T?) async -> (value: T, via: String)? {
             let deadline = Date().addingTimeInterval(timeout)
-            var nextScreen = Date().addingTimeInterval(1.5)
+            var nextScreen = Date().addingTimeInterval(0.4)
             while Date() < deadline, !cancelled {
-                let pb = NSPasteboard.general
-                let count = pb.changeCount
-                if count != baseline, count != lastRead, ClipboardSwap.canReadSilently {
-                    lastRead = count
-                    if let s = pb.string(forType: .string), let r = parse(s) { return (r, "clipboard") }
+                if clipboard {
+                    let pb = NSPasteboard.general
+                    let count = pb.changeCount
+                    if count != baseline, count != lastRead, ClipboardSwap.canReadSilently {
+                        lastRead = count
+                        if let s = pb.string(forType: .string), let v = match(s) { return (v, "clipboard") }
+                    }
                 }
                 if Date() >= nextScreen {
-                    nextScreen = Date().addingTimeInterval(1.2)
-                    if let text = await screenText(windowID: windowID), let r = parse(text) { return (r, "screen") }
+                    nextScreen = Date().addingTimeInterval(every)
+                    if let text = await screenText(windowID: windowID), let v = match(text) { return (v, "screen") }
                 }
-                try? await Task.sleep(for: .milliseconds(200))
+                try? await Task.sleep(for: .milliseconds(150))
             }
             return nil
         }

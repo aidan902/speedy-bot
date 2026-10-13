@@ -152,24 +152,32 @@ if CommandLine.arguments.contains("--selftest") {
     expect("session name", SessionWindow(pid: 1, windowID: 1, title: "ScreenConnect - FLC-JACKSON - Connected", bounds: .zero).name, "FLC-JACKSON")
     expect("unifi url", UniFiConfig.normalize("unifi.fm.net/"), "https://unifi.fm.net")
     let w = { (ip: String, c: PingCommand) in LaunchScript.Window(ip: IPv4(ip)!, command: c) }
-    expect("launch one", LaunchScript.build([w("172.16.37.4", .pingForever)], port: 443, custom: "", tile: .off, forRunDialog: true),
+    expect("launch one", LaunchScript.directRunLine([w("172.16.37.4", .pingForever)], port: 443, custom: "", tile: .off) ?? "nil",
            "powershell -noe -c \"ping -t 172.16.37.4\"")
-    expect("launch loop", LaunchScript.build([w("172.16.37.4", .pingForever), w("172.16.37.5", .pingForever), w("172.16.37.9", .pingForever)], port: 443, custom: "", tile: .off, forRunDialog: true),
+    expect("launch loop", LaunchScript.directRunLine([w("172.16.37.4", .pingForever), w("172.16.37.5", .pingForever), w("172.16.37.9", .pingForever)], port: 443, custom: "", tile: .off) ?? "nil",
            "powershell -w hidden -c \"foreach($i in 4,5,9){start powershell ('-noe -c ping -t 172.16.37.'+$i)}\"")
-    expect("launch mixed", LaunchScript.build([w("172.16.37.4", .pingForever), w("172.16.37.5", .tracert), w("10.0.0.7", .pingForever)], port: 443, custom: "", tile: .off, forRunDialog: true),
-           "powershell -w hidden -c \"start powershell '-noe -c ping -t 172.16.37.4';start powershell '-noe -c tracert -d 172.16.37.5';start powershell '-noe -c ping -t 10.0.0.7'\"")
+    expect("launch mixed", LaunchScript.body([w("172.16.37.4", .pingForever), w("172.16.37.5", .tracert), w("10.0.0.7", .pingForever)], port: 443, custom: "", tile: .off),
+           "start powershell '-noe -c ping -t 172.16.37.4';start powershell '-noe -c tracert -d 172.16.37.5';start powershell '-noe -c ping -t 10.0.0.7'")
     expect("launch arp loop", LaunchScript.statements([w("172.16.37.4", .arp), w("172.16.37.5", .arp)], port: 443, custom: "").joined(separator: ";"),
            "foreach($i in 4,5){start powershell ('-noe -c ping -n 1 172.16.37.'+$i+' | Out-Null; arp -a 172.16.37.'+$i)}")
     expect("launch custom quote", LaunchScript.statements([w("172.16.37.4", .custom)], port: 443, custom: "ping -t {ip} -l 1400 'x'").joined(separator: ";"),
            "start powershell '-noe -c ping -t 172.16.37.4 -l 1400 ''x'''")
-    let tiled = LaunchScript.build([w("172.16.37.4", .ping), w("172.16.37.5", .ping)], port: 443, custom: "", tile: .stacked, forRunDialog: true)
-    expect("tile wraps", String(tiled.prefix(25)), "powershell -w hidden -c \"")
-    expect("tile baseline", tiled.contains(LaunchScript.handles) ? "yes" : "no", "yes")
-    expect("tile call", tiled.contains("-lt 2 -and $t -lt 40);[U.W]::TileWindows(0,1,0,$n.Count,[IntPtr[]]$n)\"") ? "yes" : "no", "yes")
-    expect("tile no double quotes inside", tiled.dropFirst(25).dropLast().contains("\"") ? "has quotes" : "clean", "clean")
+    let tiled = LaunchScript.body([w("172.16.37.4", .ping), w("172.16.37.5", .ping)], port: 443, custom: "", tile: .stacked)
+    expect("tile not direct", LaunchScript.directRunLine([w("172.16.37.4", .ping)], port: 443, custom: "", tile: .stacked) ?? "nil", "nil")
+    expect("tile baseline", tiled.hasPrefix(LaunchScript.handles) ? "yes" : "no", "yes")
+    expect("tile call", tiled.hasSuffix("-lt 2 -and $t -lt 40);[U.W]::TileWindows(0,1,0,$n.Count,[IntPtr[]]$n)") ? "yes" : "no", "yes")
+    expect("tile no double quotes", tiled.contains("\"") ? "has quotes" : "clean", "clean")
     expect("tile no percent signs", tiled.contains("%") ? "has percent" : "clean", "clean")
-    expect("prompt form", LaunchScript.build([w("172.16.37.4", .ping)], port: 443, custom: "", tile: .off, forRunDialog: false),
-           "start powershell '-noe -c ping 172.16.37.4'")
+    let many = (1...8).map { w("10.0.\($0).1", .pingForever) }   // eight lone addresses: well past the Run dialog's limit
+    expect("long goes the other way", LaunchScript.directRunLine(many, port: 443, custom: "", tile: .off) ?? "nil", "nil")
+    expect("two groups still direct", LaunchScript.directRunLine([w("172.16.37.4", .ping), w("172.16.37.5", .ping), w("172.16.36.9", .ping)], port: 443, custom: "", tile: .off) ?? "nil",
+           "powershell -w hidden -c \"foreach($i in 4,5){start powershell ('-noe -c ping 172.16.37.'+$i)};start powershell '-noe -c ping 172.16.36.9'\"")
+    expect("marker open", SessionProbe.marker("PS C:\\> x\nSB7342 OPEN\n", token: "7342", word: "OPEN") ? "yes" : "no", "yes")
+    expect("marker spaced", SessionProbe.marker("SB 7342OPEN", token: "7342", word: "OPEN") ? "yes" : "no", "yes")
+    expect("marker other", SessionProbe.marker("SB7342 RUN", token: "7342", word: "OPEN") ? "yes" : "no", "no")
+    expect("probe script short enough for a prompt, no quotes/percent", SessionProbe.script.contains("\"") || SessionProbe.script.contains("%") ? "bad" : "ok", "ok")
+    let split = SessionProbe.parse("SPEEDYBOT\n172.16.37.46/23 gw=172.16.36.1\nhost=FLC-JACKSON pub=")
+    expect("probe split lines", "\(split?.ip.description ?? "nil")/\(split?.prefix ?? -1) \(split?.gateway ?? "nogw") \(split?.host ?? "nohost") \(split?.publicIP ?? "nopub")", "172.16.37.46/23 172.16.36.1 FLC-JACKSON nopub")
     for f in failures { print("FAIL \(f)") }
     print("multi ping checks: \(failures.isEmpty ? "all passed" : "\(failures.count) failed")")
     exit(map == nil || !failures.isEmpty ? 1 : 0)
