@@ -65,6 +65,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(action(state.accessibilityGranted ? "Set Up Permissions…" : "Grant Accessibility Permission…", #selector(setup)))
         menu.addItem(action("Check for Updates…", #selector(checkUpdates)))
         menu.addItem(action("Open Speedy Bot…", #selector(open)))
+        menu.addItem(action("Multi Ping…", #selector(multiPing)))
         menu.addItem(action("Quit Speedy Bot", #selector(quit), key: "q"))
     }
 
@@ -140,5 +141,6 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func setup() { state.showSetup?() }
     @objc private func checkUpdates() { state.showWindow?(); state.updater.check(userAsked: true) }
     @objc private func open() { state.showWindow?() }
+    @objc private func multiPing() { state.page = .multiPing; state.showWindow?() }
     @objc private func quit() { NSApp.terminate(nil) }
 }

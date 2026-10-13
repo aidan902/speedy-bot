@@ -1,6 +1,6 @@
 # Speedy Bot
 
-A small Mac app for techs who live in ScreenConnect and ChatGPT. It removes three bits of repeated hand work.
+A small Mac app for techs who live in ScreenConnect and ChatGPT. It removes the repeated hand work of a remote session.
 
 ## What it does
 
@@ -14,6 +14,13 @@ A small Mac app for techs who live in ScreenConnect and ChatGPT. It removes thre
 3. **Cmd+Shift+2 captures the ScreenConnect window.** One press takes a screenshot of the whole session window, no dragging, and handles it like any other screenshot. macOS asks for the Screen Recording permission the first time. You can record a different shortcut.
 4. **Screenshots filed by incident (optional).** Switch on "Save screenshots for documentation", give it the incident number, and every screenshot is also saved as
    `~/Documents/SpeedyBot Documentation/#INC - 12,345/#INC - 12,345 2026-09-30 at 11.04.12.png`.
+
+5. **Multi Ping.** A second page of the window (sidebar > Multi Ping). Ping several devices from the remote machine, each in its own PowerShell window, without typing on the remote side:
+   - **Read from session** types one PowerShell line into the session that prints the machine's address, network size and gateway, and reads the answer back (through ScreenConnect's clipboard sharing, or straight off the screen). Or type the address in yourself.
+   - Type only the end of each address: `.1`, or `.3 .5 .9`, or `.36.200` for the other half of a /23. Ranges (`.10-.20`) and full addresses work too. The page shows exactly which addresses and which command lines that means.
+   - Pick the command: `ping -t`, `ping`, `tracert`, `pathping`, `nslookup`, a port check with `Test-NetConnection`, `arp -a` for the MAC address, or your own line with `{ip}` in it.
+   - **Open N PowerShell windows** brings the session to the front and opens one window per address (Win+R, `powershell -NoExit -Command …`, Return), one after the other. Esc stops it. If Win+R does not reach your remote, switch to "the PowerShell window that is in front", which types `Start-Process powershell …` into it instead.
+   - **UniFi.** With your UniFi Network controller and an API key under Settings…, the page notes which site, switch and port the remote machine is on (and labels the devices you ping with what UniFi calls them). The key is kept in your keychain. Create one in UniFi Network under Settings › Control Plane › Integrations.
 
 ## Install
 
@@ -65,6 +72,7 @@ Tick **Also do my normal screenshot action** to change none of that. Screenshots
 - Text longer than 500 characters needs Cmd+Shift+V twice.
 - Inside a Windows remote, ordinary paste is Control+V. Cmd+V there is the Windows key.
 - Typing stops if you press Esc, hold Cmd/Control/Option, switch away from the session, or the ScreenConnect chat window takes focus.
+- Multi Ping needs the remote desktop to be unlocked, with nothing waiting for input: whatever it types goes wherever the remote's keyboard focus is. It opens windows at a fixed pace; tick "Slow remote" for a machine that takes its time.
 
 ## Update
 

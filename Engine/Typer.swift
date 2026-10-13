@@ -202,4 +202,40 @@ public enum TextTyper {
         }
         return posted
     }
+
+    // MARK: single keys and shortcuts
+
+    /// One press of a key with these exact flags (down, a short hold, up). Run on a background queue.
+    public static func postKey(_ keyCode: CGKeyCode, flags: CGEventFlags = [], source: CGEventSource?,
+                               tap: CGEventTapLocation = .cgSessionEventTap, holdMicros: UInt32 = 12_000) {
+        guard let down = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false) else { return }
+        down.flags = flags; up.flags = flags
+        down.post(tap: tap)
+        usleep(holdMicros)
+        up.post(tap: tap)
+    }
+
+    /// A shortcut the way a hand presses it: each modifier goes down as its own event, then the key, then the
+    /// modifiers come back up in reverse. A remote-desktop client forwards those modifier events one by one,
+    /// which is what makes ⌘R arrive in a Windows session as Win+R. Run on a background queue.
+    public static func postChord(_ keyCode: CGKeyCode, command: Bool = false, shift: Bool = false, control: Bool = false,
+                                 source: CGEventSource?, tap: CGEventTapLocation = .cgSessionEventTap) {
+        var modifiers: [(code: CGKeyCode, flag: CGEventFlags)] = []
+        if control { modifiers.append((CGKeyCode(kVK_Control), .maskControl)) }
+        if shift { modifiers.append((CGKeyCode(kVK_Shift), .maskShift)) }
+        if command { modifiers.append((CGKeyCode(kVK_Command), .maskCommand)) }
+        var flags: CGEventFlags = []
+        for m in modifiers {
+            flags.insert(m.flag)
+            if let e = CGEvent(keyboardEventSource: source, virtualKey: m.code, keyDown: true) { e.flags = flags; e.post(tap: tap) }
+            usleep(30_000)
+        }
+        postKey(keyCode, flags: flags, source: source, tap: tap)
+        for m in modifiers.reversed() {
+            usleep(30_000)
+            flags.remove(m.flag)
+            if let e = CGEvent(keyboardEventSource: source, virtualKey: m.code, keyDown: false) { e.flags = flags; e.post(tap: tap) }
+        }
+    }
 }

@@ -38,6 +38,8 @@ enum MainMenu {
         window.addItem(.separator())
         let show = window.addItem(withTitle: "Speedy Bot", action: #selector(AppDelegate.showMainWindow(_:)), keyEquivalent: "0")
         show.target = target
+        let ping = window.addItem(withTitle: "Multi Ping", action: #selector(AppDelegate.showMultiPing(_:)), keyEquivalent: "1")
+        ping.target = target
         add(window, titled: "Window", to: main)
 
         NSApp.mainMenu = main

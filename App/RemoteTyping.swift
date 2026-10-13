@@ -5,7 +5,7 @@ import Carbon.HIToolbox
 /// Which window of the session app had keyboard focus when the shortcut was pressed, checkable from the
 /// typing thread. ScreenConnect pops its Chat window to the front when the customer sends a message; typing
 /// must stop the moment that happens, or the rest of the clipboard (and its Return) goes to the customer.
-private struct FocusProbe: @unchecked Sendable {
+struct FocusProbe: @unchecked Sendable {
     let pid: pid_t
     let window: AXUIElement?
 

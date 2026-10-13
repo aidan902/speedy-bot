@@ -27,6 +27,18 @@ enum SpeedyShared {
     static let multiCaptureKey = "multiCapture"
     /// The first-run setup window has been dismissed.
     static let setupDoneKey = "setupDone"
+    /// The Multi Ping page: the last remote address, network size, targets, command and options.
+    static let mpRemoteIPKey = "mpRemoteIP"
+    static let mpPrefixKey = "mpPrefix"
+    static let mpTargetsKey = "mpTargets"
+    static let mpCommandKey = "mpCommand"
+    static let mpPortKey = "mpPort"
+    static let mpCustomKey = "mpCustom"
+    static let mpOpenViaKey = "mpOpenVia"
+    static let mpSlowKey = "mpSlowRemote"
+    /// The UniFi controller (the API key itself is in the keychain).
+    static let unifiURLKey = "unifiURL"
+    static let unifiTrustKey = "unifiTrustCertificate"
     /// "on", "off" or "auto" (only while a ScreenConnect session is open). `enabled` mirrors "not off" for the control.
     static let modeKey = "mode"
     /// In the pointer-rest mode: a screenshot older than this many seconds needs a double-click in ChatGPT instead.

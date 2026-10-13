@@ -110,13 +110,12 @@ struct MainView: View {
             UpdateRow(state: state, updater: state.updater)
 
             HStack {
-                Text("Version \(Updater.currentVersion)").font(.caption).foregroundStyle(.tertiary)
                 Spacer()
                 Button("Quit Speedy Bot") { NSApp.terminate(nil) }.controlSize(.small)
             }
         }
-        .padding(18)
-        .frame(width: 430)
+        .padding(22)
+        .frame(maxWidth: 740, alignment: .leading)
         .tint(.fmGreen)
     }
 
@@ -301,15 +300,98 @@ private struct SecondsField: View {
     }
 }
 
-/// The window's contents, scrolling when they are taller than the screen (a 13-inch MacBook with every option open).
+/// The pages of the window.
+enum MainPage: String, CaseIterable, Identifiable {
+    case switches, multiPing
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .switches: return "Speedy Bot"
+        case .multiPing: return "Multi Ping"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .switches: return "hare.fill"
+        case .multiPing: return "dot.radiowaves.left.and.right"
+        }
+    }
+}
+
+/// The window: a sidebar with the pages on the left, the chosen page on the right (scrolling when it is
+/// taller than the window).
 struct MainWindowContent: View {
     @ObservedObject var state: AppState
 
+    /// The size Typeless opens at; the tech's own size is remembered after that.
+    static let defaultSize = NSSize(width: 1080, height: 750)
+    static let minSize = NSSize(width: 840, height: 560)
+
     var body: some View {
-        ScrollView(.vertical) { MainView(state: state) }
-            .frame(width: 430)
-            .frame(maxHeight: (NSScreen.main?.visibleFrame.height ?? 800) - 40)   // leave room for the title bar
-            .fixedSize(horizontal: false, vertical: true)
+        HStack(spacing: 0) {
+            Sidebar(state: state)
+            Divider()
+            ScrollView(.vertical) {
+                Group {
+                    switch state.page {
+                    case .switches: MainView(state: state)
+                    case .multiPing: MultiPingView(state: state.multiPing)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+            .background(Color(nsColor: .windowBackgroundColor))
+        }
+        .frame(minWidth: Self.minSize.width, minHeight: Self.minSize.height)
+    }
+}
+
+private struct Sidebar: View {
+    @ObservedObject var state: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(LinearGradient(colors: [.fmGreen, Color(red: 0.07, green: 0.62, blue: 0.27)], startPoint: .top, endPoint: .bottom))
+                    Image(systemName: "hare.fill").font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+                }
+                .frame(width: 26, height: 26)
+                .saturation(state.active ? 1 : 0)
+                Text("Speedy Bot").font(.headline)
+            }
+            .padding(.horizontal, 8)
+            .padding(.bottom, 12)
+            ForEach(MainPage.allCases) { page in
+                Button { state.page = page } label: {
+                    HStack(spacing: 9) {
+                        Image(systemName: page.symbol).frame(width: 18)
+                        Text(page.title)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.vertical, 7)
+                    .padding(.horizontal, 10)
+                    .background(state.page == page ? Color.primary.opacity(0.09) : Color.clear, in: RoundedRectangle(cornerRadius: 7))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer()
+            VStack(alignment: .leading, spacing: 3) {
+                Text(state.mode.title).font(.caption.weight(.semibold)).foregroundStyle(state.active ? Color.fmGreen : Color.secondary)
+                Text(state.mode == .auto
+                     ? (state.screenConnectOpen ? "A ScreenConnect session is open" : "Waiting for a ScreenConnect session")
+                     : (state.mode == .on ? "Working everywhere" : "Not doing anything"))
+                    .font(.caption).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
+                Text("Version \(Updater.currentVersion)").font(.caption).foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 8)
+        }
+        .padding(12)
+        .frame(width: 200)
+        .frame(maxHeight: .infinity)
+        .background(Color(nsColor: .underPageBackgroundColor))
     }
 }
 
@@ -400,24 +482,26 @@ private struct FeatureRow: View {
     }
 }
 
+/// The one window of the app.
 @MainActor
 final class MainWindowController {
     private let window: NSWindow
     private var resizeObserver: NSObjectProtocol?
 
     init(state: AppState) {
-        // The hosting controller keeps the window exactly as tall as its contents as options open and close.
         let host = NSHostingController(rootView: MainWindowContent(state: state))
-        host.sizingOptions = [.preferredContentSize]
+        host.sizingOptions = [.minSize]
         window = NSWindow(contentViewController: host)
-        window.styleMask = [.titled, .closable, .miniaturizable]
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.title = "Speedy Bot"
         window.isReleasedWhenClosed = false
-        // A window made this way starts at 1x32 and only takes the SwiftUI size on the first layout pass,
-        // growing down and right from the same corner. Size it first, then centre.
-        host.view.layoutSubtreeIfNeeded()
-        window.setContentSize(host.view.fittingSize)
+        window.contentMinSize = MainWindowContent.minSize
+        // Typeless-sized, or as big as a small screen allows; the size the tech drags it to is remembered.
+        let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        window.setContentSize(NSSize(width: min(MainWindowContent.defaultSize.width, visible.width - 40),
+                                     height: min(MainWindowContent.defaultSize.height, visible.height - 60)))
         window.center()
+        window.setFrameAutosaveName("SpeedyBotMain")
         // AppKit does not pull a window back when it grows past the bottom of the screen.
         resizeObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didResizeNotification, object: window, queue: .main
@@ -432,10 +516,12 @@ final class MainWindowController {
         }
     }
 
-    static func snapshot(state: AppState, to url: URL) -> Bool {
-        let host = NSHostingView(rootView: MainView(state: state).background(Color(nsColor: .windowBackgroundColor)))
-        let size = host.fittingSize
-        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered, defer: false)
+    /// Draws one page at the window's standard size without showing anything (for the README and checks).
+    @MainActor static func snapshot(state: AppState, page: MainPage, to url: URL) -> Bool {
+        state.page = page
+        let host = NSHostingView(rootView: MainWindowContent(state: state).background(Color(nsColor: .windowBackgroundColor)))
+        host.frame = NSRect(origin: .zero, size: MainWindowContent.defaultSize)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = host
         host.layoutSubtreeIfNeeded()
         guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return false }

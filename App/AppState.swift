@@ -107,6 +107,10 @@ final class AppState: ObservableObject {
     @Published var armed = false
     /// Clipboard text is being typed into a remote session right now.
     @Published var typing = false
+    /// Which page the window shows.
+    @Published var page: MainPage = .switches
+    /// The Multi Ping page's own state.
+    private(set) lazy var multiPing = MultiPingState(app: self)
 
     var showWindow: (() -> Void)?
     var showSetup: (() -> Void)?

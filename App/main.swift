@@ -97,7 +97,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Closing the window leaves Speedy Bot working; Quit is what stops it.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
-    @objc func showMainWindow(_ sender: Any?) { window?.show() }
+    @objc func showMainWindow(_ sender: Any?) { state.page = .switches; window?.show() }
+
+    @objc func showMultiPing(_ sender: Any?) { state.page = .multiPing; window?.show() }
 
     @objc func checkForUpdates(_ sender: Any?) {
         window?.show()   // the result appears at the bottom of the window
@@ -113,7 +115,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 if CommandLine.arguments.contains("--selftest") {
     let map = LayoutKeyMap.current()
     print("speedybot selftest: layout=\(map?.layoutName ?? "none") keys=\(map?.map.count ?? 0) group=\(SpeedyShared.groupID)")
-    exit(map == nil ? 1 : 0)
+    // The arithmetic behind Multi Ping, checked on every build.
+    var failures: [String] = []
+    func expect(_ name: String, _ got: String, _ want: String) { if got != want { failures.append("\(name): got \(got), want \(want)") } }
+    let base = IPv4("172.16.37.46")!
+    expect("mask /23", IPv4.mask(prefix: 23).description, "255.255.254.0")
+    expect("prefix of mask", String(IPv4.prefix(ofMask: "255.255.254.0") ?? -1), "23")
+    expect("bad mask", String(IPv4.prefix(ofMask: "255.0.255.0") ?? -1), "-1")
+    expect("network /23", base.network(prefix: 23).description, "172.16.36.0")
+    expect("broadcast /23", base.broadcast(prefix: 23).description, "172.16.37.255")
+    let ips = { (text: String, prefix: Int) in TargetParser.parse(text, base: base, prefix: prefix).targets.map { $0.ip?.description ?? "bad(\($0.input))" }.joined(separator: " ") }
+    expect("last octet", ips(".1", 24), "172.16.37.1")
+    expect("several", ips(".3 .5 .9", 24), "172.16.37.3 172.16.37.5 172.16.37.9")
+    expect("two octets", ips(".36.200, 37.1", 23), "172.16.36.200 172.16.37.1")
+    expect("full address", ips("10.0.0.1", 24), "10.0.0.1")
+    expect("range", ips(".10-.12", 24), "172.16.37.10 172.16.37.11 172.16.37.12")
+    expect("range plain", ips("10-12", 24), "172.16.37.10 172.16.37.11 172.16.37.12")
+    expect("duplicates", ips(".1 .1 172.16.37.1", 24), "172.16.37.1")
+    expect("bad token", ips(".300 x", 24), "bad(.300) bad(x)")
+    expect("outside", String(TargetParser.parse(".36.5", base: base, prefix: 24).targets.first?.insideNetwork ?? true), "false")
+    expect("inside /23", String(TargetParser.parse(".36.5", base: base, prefix: 23).targets.first?.insideNetwork ?? false), "true")
+    expect("no base", TargetParser.parse(".1", base: nil, prefix: 24).targets.first?.problem ?? "nil", "needs the remote machine's address")
+    expect("cap", String(TargetParser.parse("0-255", base: base, prefix: 24).targets.count), String(TargetParser.maxTargets))
+    let reading = SessionProbe.parse("PS C:\\> junk\nSPEEDYBOT 172.16.37.46/23 gw=172.16.36.1 host=FLC-JACKSON pub=203.0.113.9\nPS C:\\>")
+    expect("probe ip", reading?.ip.description ?? "nil", "172.16.37.46")
+    expect("probe prefix", String(reading?.prefix ?? -1), "23")
+    expect("probe gw", reading?.gateway ?? "nil", "172.16.36.1")
+    expect("probe host", reading?.host ?? "nil", "FLC-JACKSON")
+    expect("probe pub", reading?.publicIP ?? "nil", "203.0.113.9")
+    let ocr = SessionProbe.parse("SPEEDY BOT 10.1.2.3 / 24 gw=10.1.2.1 host=PC1 pub=none")
+    expect("ocr spaced", "\(ocr?.ip.description ?? "nil")/\(ocr?.prefix ?? -1) \(ocr?.publicIP ?? "nopub")", "10.1.2.3/24 nopub")
+    expect("script echo ignored", SessionProbe.parse("$l='SPEEDYBOT '+$a.IPAddress") == nil ? "nil" : "match", "nil")
+    expect("command", PingCommand.arp.line(ip: "1.2.3.4", port: 443, custom: ""), "ping -n 1 1.2.3.4 | Out-Null; arp -a 1.2.3.4")
+    expect("custom", PingCommand.custom.line(ip: "1.2.3.4", port: 443, custom: "ping -l 1400 {ip} -t"), "ping -l 1400 1.2.3.4 -t")
+    expect("custom no placeholder", PingCommand.custom.line(ip: "1.2.3.4", port: 443, custom: "tracert"), "tracert 1.2.3.4")
+    expect("session name", SessionWindow(pid: 1, windowID: 1, title: "ScreenConnect - FLC-JACKSON - Connected", bounds: .zero).name, "FLC-JACKSON")
+    expect("unifi url", UniFiConfig.normalize("unifi.fm.net/"), "https://unifi.fm.net")
+    for f in failures { print("FAIL \(f)") }
+    print("multi ping checks: \(failures.isEmpty ? "all passed" : "\(failures.count) failed")")
+    exit(map == nil || !failures.isEmpty ? 1 : 0)
+}
+
+// `--probe-test`: list the ScreenConnect session windows and read the first one off the screen (nothing is typed).
+if CommandLine.arguments.contains("--probe-test") {
+    _ = NSApplication.shared
+    let sessions = SessionWindows.all()
+    print("sessions: \(sessions.count)")
+    for s in sessions { print("  pid \(s.pid) window \(s.windowID) \(Int(s.bounds.width))x\(Int(s.bounds.height)) title=\(s.title) name=\(s.name)") }
+    let i = CommandLine.arguments.firstIndex(of: "--probe-test")!
+    let wanted = CommandLine.arguments.count > i + 1 ? CGWindowID(CommandLine.arguments[i + 1]) : nil
+    let keep = CommandLine.arguments.count > i + 2 ? CommandLine.arguments[i + 2] : nil
+    if let windowID = wanted ?? sessions.first?.windowID {
+        // Off the main thread: the main thread is parked on the semaphore and must not be needed.
+        let sema = DispatchSemaphore(value: 0)
+        Task.detached {
+            let started = Date()
+            let text = await SessionProbe.screenText(windowID: windowID, keepCaptureAt: keep)
+            print("window \(windowID): text in \(Int(Date().timeIntervalSince(started) * 1000)) ms: \(text == nil ? "FAILED (Screen Recording?)" : "\(text!.count) characters")")
+            for line in (text ?? "").components(separatedBy: .newlines) where line.rangeOfCharacter(from: .decimalDigits) != nil { print("  | \(line)") }
+            if let r = SessionProbe.parse(text ?? "") { print("  marker line found: \(r)") }
+            sema.signal()
+        }
+        if sema.wait(timeout: .now() + 60) == .timedOut { print("timed out") }
+    }
+    exit(0)
 }
 
 // `--restore-screenshot-settings`: put the screenshot settings back without starting the app (used by uninstall).
@@ -137,10 +202,13 @@ if let i = CommandLine.arguments.firstIndex(of: "--snapshot-setup"), CommandLine
     exit(ok ? 0 : 1)
 }
 
-// `--snapshot <file.png>`: draw the window's contents to a picture without showing it (for the README and checks).
-if let i = CommandLine.arguments.firstIndex(of: "--snapshot"), CommandLine.arguments.count > i + 1 {
-    _ = NSApplication.shared
-    exit(MainWindowController.snapshot(state: AppState(), to: URL(fileURLWithPath: CommandLine.arguments[i + 1])) ? 0 : 1)
+// `--snapshot <file.png>` / `--snapshot-ping <file.png>`: draw a page of the window to a picture without showing
+// it (for the README and checks).
+for (flag, page) in [("--snapshot", MainPage.switches), ("--snapshot-ping", MainPage.multiPing)] {
+    if let i = CommandLine.arguments.firstIndex(of: flag), CommandLine.arguments.count > i + 1 {
+        _ = NSApplication.shared
+        exit(MainWindowController.snapshot(state: AppState(), page: page, to: URL(fileURLWithPath: CommandLine.arguments[i + 1])) ? 0 : 1)
+    }
 }
 
 let app = NSApplication.shared
