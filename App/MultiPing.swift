@@ -452,23 +452,10 @@ final class MultiPingState: ObservableObject {
     /// The key pace for command lines: faster than clipboard typing when the tech has chosen Fast.
     private var pace: TypingOptions { app.fastTyping ? .turbo : TypingOptions() }
 
-    // MARK: sending
-
-    /// Win+R, the line, Return. Forward Delete first drops the tail the Run dialog may have completed inline.
-    private func steps(typing line: String) -> [RemoteShell.Step] {
-        let slow = slowRemote ? 2 : 1
-        switch openVia {
-        case .runDialog:
-            return [.chord("r", command: true, shift: false), .wait(ms: 600 * slow),
-                    .text(line), .key(CGKeyCode(kVK_ForwardDelete)), .key(CGKeyCode(kVK_Return))]
-        case .currentWindow:
-            return [.text(line), .key(CGKeyCode(kVK_Return))]
-        }
-    }
-
     // MARK: getting a script into the session
 
     private var clipboardHold: ClipboardSnapshot?
+    private var activeWatch: SessionProbe.Watch?
 
     /// Puts the tech's own clipboard back once the script has been picked up (or could not be).
     private func releaseClipboard() {
@@ -476,16 +463,34 @@ final class MultiPingState: ObservableObject {
         clipboardHold = nil
     }
 
+    /// Win+R, the line, Return. Forward Delete first drops the tail the Run dialog may have completed inline.
+    private func runDialogSteps(typing line: String) -> [RemoteShell.Step] {
+        let slow = slowRemote ? 2 : 1
+        return [.chord("r", command: true, shift: false), .wait(ms: 600 * slow),
+                .text(line), .key(CGKeyCode(kVK_ForwardDelete)), .key(CGKeyCode(kVK_Return))]
+    }
+
+    private func promptSteps(typing line: String) -> [RemoteShell.Step] {
+        [.text(line), .key(CGKeyCode(kVK_Return))]
+    }
+
+    private func runShell(_ label: String, _ steps: [RemoteShell.Step], in session: SessionWindow,
+                          progress: @escaping @MainActor @Sendable (String) -> Void) async -> RemoteShell.Outcome {
+        await withCheckedContinuation { cont in
+            shell.run([RemoteShell.Group(label: label, steps: steps)], in: session, pace: pace, progress: progress) { cont.resume(returning: $0) }
+        }
+    }
+
     /// Runs a PowerShell script in the session with as little typing as possible. A short opener goes in
     /// (through the Run dialog, or the PowerShell window in front); it prints "SB1234 OPEN", then takes the
     /// script from the clipboard if ScreenConnect has shared it, printing "SB1234 RUN" as the script starts.
-    /// When RUN never shows, the script is typed into that window instead. `via` reports which happened.
+    /// When the window in front did not take the opener, a window of our own is opened with Win+R. When RUN
+    /// never shows, the script is typed into the opener's window instead. `via` reports which happened.
     private func runScript(_ script: String, in session: SessionWindow, closeWhenDone: Bool,
-                           progress: @escaping @MainActor @Sendable (String) -> Void,
-                           completion: @escaping @MainActor @Sendable (RemoteShell.Outcome, _ via: String) -> Void) {
+                           progress: @escaping @MainActor @Sendable (String) -> Void) async -> (outcome: RemoteShell.Outcome, via: String) {
         let token = SessionProbe.token()
-        let exitStatement = closeWhenDone && openVia == .runDialog ? ";[Environment]::Exit(0)" : ""
-        let runLine = "'SB\(token) RUN';" + script + exitStatement
+        let ownWindow = openVia == .runDialog
+        let runLine = "'SB\(token) RUN';" + script + (closeWhenDone && ownWindow ? ";[Environment]::Exit(0)" : "")
         // The script rides the clipboard only when the tech's own clipboard can be put back afterwards.
         var viaClipboard = false
         if let hold = ClipboardSwap.snapshot() {
@@ -498,34 +503,45 @@ final class MultiPingState: ObservableObject {
         let opener = viaClipboard
             ? "'SB\(token) OPEN';$t=0;while(($s=gcb -r)-notlike'#SB*' -and $t -lt 30){sleep -m 100;$t++};if($s -like '#SB*'){iex $s}"
             : "'SB\(token) OPEN'"
-        let first = openVia == .runDialog ? "powershell -noe -c \"\(opener)\"" : opener
+        let wrapped = "powershell -noe -c \"\(opener)\""
         let watch = SessionProbe.Watch(windowID: session.windowID)
-        let pace = self.pace
+        activeWatch = watch
+        defer { activeWatch = nil }
         SpeedyShared.log.notice("remote script: \(script.count) characters, clipboard=\(viaClipboard), via \(self.openVia.rawValue, privacy: .public)")
-        shell.run([RemoteShell.Group(label: "Opening PowerShell in \(session.name)…", steps: steps(typing: first))],
-                  in: session, pace: pace, progress: progress) { [weak self] outcome in
-            guard let self else { return }
-            guard outcome == .done else { self.releaseClipboard(); completion(outcome, "none"); return }
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                if viaClipboard, await watch.wait(timeout: 8, clipboard: false, { SessionProbe.marker($0, token: token, word: "RUN") ? true : nil }) != nil {
-                    self.releaseClipboard()
-                    completion(.done, "clipboard")
-                    return
-                }
-                // No shared clipboard: wait for the window, then type the script into it.
-                guard await watch.wait(timeout: viaClipboard ? 3 : 10, clipboard: false, { SessionProbe.marker($0, token: token, word: "OPEN") ? true : nil }) != nil else {
-                    self.releaseClipboard()
-                    completion(.stopped("The PowerShell window did not show up on screen"), "none")
-                    return
-                }
-                self.releaseClipboard()
-                progress("Typing the script into \(session.name)…")
-                self.shell.run([RemoteShell.Group(label: "Typing the script…", steps: [.text(runLine), .key(CGKeyCode(kVK_Return))])],
-                               in: session, pace: pace, progress: progress) { outcome in completion(outcome, "typed") }
-            }
+        let label = "Opening PowerShell in \(session.name)…"
+
+        func started() async -> Bool {
+            guard viaClipboard else { return false }
+            return await watch.wait(timeout: 8, clipboard: false) { SessionProbe.marker($0, token: token, word: "RUN") ? true : nil } != nil
         }
+        func opened() async -> Bool {
+            await watch.wait(timeout: viaClipboard ? 3 : 10, clipboard: false) { SessionProbe.marker($0, token: token, word: "OPEN") ? true : nil } != nil
+        }
+
+        var outcome = await runShell(label, ownWindow ? runDialogSteps(typing: wrapped) : promptSteps(typing: opener), in: session, progress: progress)
+        guard outcome == .done else { releaseClipboard(); return (outcome, "none") }
+        if await started() { releaseClipboard(); return (.done, "clipboard") }
+        var open = await opened()
+        if !open, !ownWindow {
+            // Nothing in front took the opener (no PowerShell prompt there): open a window of our own.
+            progress("No PowerShell prompt was in front; opening one with Win+R…")
+            SpeedyShared.log.notice("remote script: the window in front did not answer; trying the Run dialog")
+            outcome = await runShell(label, runDialogSteps(typing: wrapped), in: session, progress: progress)
+            guard outcome == .done else { releaseClipboard(); return (outcome, "none") }
+            if await started() { releaseClipboard(); return (.done, "clipboard") }
+            open = await opened()
+        }
+        guard open else {
+            releaseClipboard()
+            return (.stopped("The PowerShell window did not show up on screen"), "none")
+        }
+        releaseClipboard()
+        progress("Typing the script into \(session.name)…")
+        let typed = await runShell("Typing the script…", promptSteps(typing: runLine), in: session, progress: progress)
+        return (typed, "typed")
     }
+
+    // MARK: sending
 
     func send() {
         guard !busy else { return }
@@ -542,23 +558,26 @@ final class MultiPingState: ObservableObject {
             self?.status = label
             Toast.show(label, seconds: 2.5)
         }
-        let finish: @MainActor @Sendable (RemoteShell.Outcome, String) -> Void = { [weak self] outcome, via in
+        let windows = self.windows, port = self.port, custom = self.custom, tile = self.tile
+        Task { @MainActor [weak self] in
             guard let self else { return }
+            let result: (outcome: RemoteShell.Outcome, via: String)
+            if self.openVia == .runDialog, let direct = LaunchScript.directRunLine(windows, port: port, custom: custom, tile: tile) {
+                result = (await self.runShell("Opening \(what) in \(session.name)…", self.runDialogSteps(typing: direct), in: session, progress: progress), "direct")
+            } else {
+                result = await self.runScript(LaunchScript.body(windows, port: port, custom: custom, tile: tile), in: session, closeWhenDone: true, progress: progress)
+            }
             self.busy = false
-            let how = via == "clipboard" ? " (script sent over the shared clipboard)" : via == "typed" ? " (script typed)" : ""
-            self.status = Self.describe(outcome, done: "Sent: \(what) opening in \(session.name)\(how).\(arranged)")
-            if outcome != .done { Toast.show(self.status, seconds: 3) }
-        }
-        if openVia == .runDialog, let direct = LaunchScript.directRunLine(windows, port: port, custom: custom, tile: tile) {
-            shell.run([RemoteShell.Group(label: "Opening \(what) in \(session.name)…", steps: steps(typing: direct))],
-                      in: session, pace: pace, progress: progress) { outcome in finish(outcome, "direct") }
-        } else {
-            runScript(LaunchScript.body(windows, port: port, custom: custom, tile: tile), in: session, closeWhenDone: true,
-                      progress: progress, completion: finish)
+            let how = result.via == "clipboard" ? " (script sent over the shared clipboard)" : result.via == "typed" ? " (script typed)" : ""
+            self.status = Self.describe(result.outcome, done: "Sent: \(what) opening in \(session.name)\(how).\(arranged)")
+            if result.outcome != .done { Toast.show(self.status, seconds: 3) }
         }
     }
 
-    func stop() { shell.cancel() }
+    func stop() {
+        shell.cancel()
+        activeWatch?.cancel()
+    }
 
     static func describe(_ outcome: RemoteShell.Outcome, done: String) -> String {
         switch outcome {
@@ -582,32 +601,31 @@ final class MultiPingState: ObservableObject {
         probing = true
         probeStatus = "Asking \(session.name) for its address…"
         probeTask?.cancel()
-        runScript(SessionProbe.script, in: session, closeWhenDone: false, progress: { label in Toast.show(label, seconds: 2) },
-                  completion: { [weak self] outcome, via in
+        probeTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            let result = await self.runScript(SessionProbe.script, in: session, closeWhenDone: false, progress: { label in Toast.show(label, seconds: 2) })
             self.busy = false
-            guard outcome == .done else {
+            guard result.outcome == .done else {
                 self.probing = false
-                self.probeStatus = Self.describe(outcome, done: "")
+                self.probeStatus = Self.describe(result.outcome, done: "")
                 return
             }
             self.probeStatus = "Waiting for the answer…"
             let watch = SessionProbe.Watch(windowID: session.windowID)
-            self.probeTask = Task { @MainActor [weak self] in
-                let found = await watch.wait(timeout: 30, clipboard: true) { SessionProbe.parse($0) }
-                guard let self else { return }
-                self.probing = false
-                guard let found else {
-                    self.probeStatus = "No answer in 30 seconds. Type the address in, or try again once the PowerShell window has printed the \(SessionProbe.marker) line."
-                    SpeedyShared.log.notice("multi ping: no \(SessionProbe.marker) line came back (script \(via, privacy: .public))")
-                    return
-                }
-                self.apply(found.value)
-                self.probeStatus = "Read from \(session.name) (script \(via), answer off the \(found.via))."
-                Toast.show("\(found.value.ip)/\(found.value.prefix) read from \(session.name)", seconds: 2.5)
-                self.lookUpUniFi()
+            self.activeWatch = watch
+            let found = await watch.wait(timeout: 30, clipboard: true) { SessionProbe.parse($0) }
+            self.activeWatch = nil
+            self.probing = false
+            guard let found else {
+                self.probeStatus = "No answer in 30 seconds. Type the address in, or try again once the PowerShell window has printed the \(SessionProbe.marker) line."
+                SpeedyShared.log.notice("multi ping: no \(SessionProbe.marker) line came back (script \(result.via, privacy: .public))")
+                return
             }
-        })
+            self.apply(found.value)
+            self.probeStatus = "Read from \(session.name) (script \(result.via), answer off the \(found.via))."
+            Toast.show("\(found.value.ip)/\(found.value.prefix) read from \(session.name)", seconds: 2.5)
+            self.lookUpUniFi()
+        }
     }
 
     private func apply(_ r: SessionProbe.Reading) {
