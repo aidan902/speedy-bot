@@ -455,7 +455,16 @@ final class ScreenshotPasteController {
         }
         let pastedAt = ContinuousClock.now
         let pid = app.processIdentifier
-        let (readiness, button) = await Task.detached { await ChatSend.waitUntilReady(pid: pid, timeout: 20) }.value
+        // Wait for the chat app to be ready: the picture finished uploading, and it is not still answering the
+        // last message (while it answers, the Send button is a Stop button and nothing should go yet).
+        let logged = AtomicFlag()
+        let (readiness, button) = await Task.detached {
+            await ChatSend.waitUntilReady(pid: pid, timeout: 30) { scan in
+                guard !logged.get() else { return }
+                logged.set(true)
+                SpeedyShared.log.notice("auto-send: compose buttons = [\(scan.inventory.joined(separator: ", "), privacy: .public)] tree=\(scan.hasTree) streaming=\(scan.streaming)")
+            }
+        }.value
         let waited = Int((ContinuousClock.now - pastedAt) / .milliseconds(1))
         switch readiness {
         case .ready:
@@ -526,7 +535,12 @@ final class ScreenshotPasteController {
             // live before the paste, there is a draft in the box, and the screenshot is only pasted.
             let pid = app.processIdentifier
             let hadDraft: Bool = thenSend
-                ? await Task.detached { ChatSend.findSendButton(pid: pid).flatMap(ChatSend.isEnabled) ?? false }.value
+                ? await Task.detached { () -> Bool in
+                    ChatSend.wakeAccessibility(pid: pid)   // ChatGPT keeps its tree asleep until asked
+                    let scan = ChatSend.scanComposer(pid: pid)
+                    // A draft is text already waiting to go; a half-finished answer (streaming) is not a draft.
+                    return !scan.streaming && (scan.sendButton.flatMap(ChatSend.isEnabled) ?? false)
+                }.value
                 : false
 
             // Only the current ChatGPT app is known to route a paste to its message box from anywhere in the

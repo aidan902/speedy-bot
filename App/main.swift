@@ -208,6 +208,27 @@ if CommandLine.arguments.contains("--probe-test") {
     exit(0)
 }
 
+// `--dump-chat`: show what the auto-send finder sees in the chat apps right now (needs the Accessibility grant).
+if CommandLine.arguments.contains("--dump-chat") {
+    _ = NSApplication.shared
+    let ids = ["anthropic", "openai", "chatgpt", "codex", "grok", "xai", ".x.grok"]
+    let apps = NSWorkspace.shared.runningApplications.filter { app in
+        let b = (app.bundleIdentifier ?? "").lowercased()
+        return ids.contains { b.contains($0) } && app.activationPolicy == .regular
+    }
+    print("chat apps: \(apps.count); AXIsProcessTrusted=\(AXIsProcessTrusted())")
+    for app in apps {
+        let pid = app.processIdentifier
+        ChatSend.wakeAccessibility(pid: pid)
+        Thread.sleep(forTimeInterval: 0.8)
+        let scan = ChatSend.scanComposer(pid: pid)
+        print("== \(app.localizedName ?? "?") [\(app.bundleIdentifier ?? "?")]")
+        print("   tree=\(scan.hasTree) streaming=\(scan.streaming) sendButton=\(scan.sendButton != nil ? (ChatSend.isEnabled(scan.sendButton!) == true ? "enabled" : "disabled") : "none")")
+        print("   buttons: \(scan.inventory.joined(separator: ", "))")
+    }
+    exit(0)
+}
+
 // `--restore-screenshot-settings`: put the screenshot settings back without starting the app (used by uninstall).
 if CommandLine.arguments.contains("--restore-screenshot-settings") {
     ScreencapturePrefs.restore()
