@@ -175,13 +175,13 @@ struct MultiPingView: View {
                     .help("Doubles the pauses while windows open, for a machine that takes its time.")
             }
             HStack(spacing: 8) {
-                Text("Arrange the windows")
+                Text("Arrange").fixedSize()
                 Picker("Arrange the windows", selection: $state.tile) {
                     ForEach(TileLayout.allCases) { Text($0.title).tag($0) }
                 }
                 .labelsHidden().fixedSize()
                 Spacer(minLength: 16)
-                Text("Open them through")
+                Text("Open through").fixedSize()
                 Picker("Open them through", selection: $state.openVia) {
                     ForEach(OpenVia.allCases) { Text($0.title).tag($0) }
                 }
