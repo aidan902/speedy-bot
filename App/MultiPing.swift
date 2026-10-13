@@ -62,6 +62,20 @@ enum PingCommand: String, CaseIterable, Identifiable {
         }
     }
 
+    /// The menu title in a device row, where there is little room.
+    var shortTitle: String {
+        switch self {
+        case .pingForever: return "ping -t"
+        case .ping: return "ping"
+        case .tracert: return "tracert"
+        case .pathping: return "pathping"
+        case .nslookup: return "nslookup"
+        case .portCheck: return "port check"
+        case .arp: return "arp -a"
+        case .custom: return "custom"
+        }
+    }
+
     var needsPort: Bool { self == .portCheck }
 
     /// The command line for one address. A custom line uses `{ip}` where the address goes (or gets it on the end).
@@ -188,6 +202,16 @@ final class MultiPingState: ObservableObject {
     @Published var custom: String { didSet { store(custom, SpeedyShared.mpCustomKey) } }
     @Published var openVia: OpenVia { didSet { store(openVia.rawValue, SpeedyShared.mpOpenViaKey) } }
     @Published var slowRemote: Bool { didSet { store(slowRemote, SpeedyShared.mpSlowKey) } }
+    /// The command above goes to every device; off, each device row has its own menu.
+    @Published var applyToAll: Bool { didSet { store(applyToAll, SpeedyShared.mpApplyToAllKey) } }
+    /// A device's own command, by address (used while Apply to all is off).
+    @Published private(set) var rowCommands: [String: PingCommand] {
+        didSet { store(rowCommands.mapValues(\.rawValue), SpeedyShared.mpRowCommandsKey) }
+    }
+    /// Devices left in the list but not sent to, by address.
+    @Published private(set) var excluded: Set<String> {
+        didSet { store(Array(excluded).sorted(), SpeedyShared.mpExcludedKey) }
+    }
 
     @Published private(set) var sessions: [SessionWindow] = []
     @Published var selectedSession: CGWindowID?
@@ -220,6 +244,9 @@ final class MultiPingState: ObservableObject {
         custom = d.string(forKey: SpeedyShared.mpCustomKey) ?? ""
         openVia = d.string(forKey: SpeedyShared.mpOpenViaKey).flatMap(OpenVia.init(rawValue:)) ?? .runDialog
         slowRemote = SpeedyShared.bool(SpeedyShared.mpSlowKey, default: false)
+        applyToAll = SpeedyShared.bool(SpeedyShared.mpApplyToAllKey, default: true)
+        rowCommands = (d.dictionary(forKey: SpeedyShared.mpRowCommandsKey) as? [String: String] ?? [:]).compactMapValues(PingCommand.init(rawValue:))
+        excluded = Set(d.stringArray(forKey: SpeedyShared.mpExcludedKey) ?? [])
         loading = false
     }
 
@@ -275,10 +302,41 @@ final class MultiPingState: ObservableObject {
 
     var parsed: (targets: [PingTarget], note: String?) { TargetParser.parse(targetsText, base: baseIP, prefix: prefix) }
     var targets: [PingTarget] { parsed.targets }
-    var ready: [PingTarget] { targets.filter { $0.ip != nil } }
+    /// The devices that get a window: resolved, and not unticked.
+    var ready: [PingTarget] { targets.filter { $0.ip != nil && isIncluded($0) } }
+
+    // MARK: per-device choices
+
+    func isIncluded(_ target: PingTarget) -> Bool { !excluded.contains(target.id) }
+
+    func setIncluded(_ on: Bool, for target: PingTarget) {
+        if on { excluded.remove(target.id) } else { excluded.insert(target.id) }
+    }
+
+    /// The command a device gets: the one for all, or its own.
+    func command(for target: PingTarget) -> PingCommand {
+        applyToAll ? command : (rowCommands[target.id] ?? command)
+    }
+
+    func setCommand(_ c: PingCommand, for target: PingTarget) {
+        rowCommands[target.id] = c
+    }
+
+    /// Choices kept for addresses that are no longer in the list are dropped.
+    func pruneChoices() {
+        let ids = Set(targets.map(\.id))
+        let keptCommands = rowCommands.filter { ids.contains($0.key) }
+        if keptCommands.count != rowCommands.count { rowCommands = keptCommands }
+        let keptExcluded = excluded.intersection(ids)
+        if keptExcluded != excluded { excluded = keptExcluded }
+    }
+
+    /// Any device row wants a port number / a custom line.
+    var usesPort: Bool { command.needsPort || targets.contains { command(for: $0).needsPort } }
+    var usesCustom: Bool { command == .custom || targets.contains { command(for: $0) == .custom } }
 
     func line(for target: PingTarget) -> String {
-        command.line(ip: target.ip?.description ?? "", port: port, custom: custom)
+        command(for: target).line(ip: target.ip?.description ?? "", port: port, custom: custom)
     }
 
     /// What the tech chose, written the way it is typed into the session.
@@ -320,7 +378,7 @@ final class MultiPingState: ObservableObject {
         }
         busy = true
         status = "Starting…"
-        SpeedyShared.log.notice("multi ping: \(items.count) window(s), \(self.command.rawValue, privacy: .public), via \(self.openVia.rawValue, privacy: .public)")
+        SpeedyShared.log.notice("multi ping: \(items.count) window(s), \(self.applyToAll ? self.command.rawValue : "per device", privacy: .public), via \(self.openVia.rawValue, privacy: .public)")
         shell.run(groups, in: session, fast: app.fastTyping, progress: { [weak self] label in
             self?.status = label
             Toast.show(label, seconds: 2.5)

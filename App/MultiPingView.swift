@@ -14,7 +14,7 @@ struct MultiPingView: View {
             runCard
         }
         .padding(22)
-        .frame(maxWidth: 780, alignment: .leading)
+        .frame(maxWidth: 840, alignment: .leading)
         .tint(.fmGreen)
         .onAppear { state.startWatchingSessions() }
         .onDisappear { state.stopWatchingSessions() }
@@ -132,31 +132,39 @@ struct MultiPingView: View {
     private var runCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("What to run").font(.headline)
-            HStack(alignment: .top, spacing: 14) {
+            HStack(alignment: .bottom, spacing: 14) {
                 field("Command") {
                     Picker("Command", selection: $state.command) {
                         ForEach(PingCommand.allCases) { Text($0.title).tag($0) }
                     }
-                    .labelsHidden().frame(width: 320)
+                    .labelsHidden().frame(width: 300)
                 }
-                if state.command.needsPort {
+                HStack(spacing: 6) {
+                    RoundToggle(symbol: "checkmark", label: "Apply to all", isOn: $state.applyToAll, size: 20, emptyWhenOff: true)
+                    Text("Apply to all")
+                }
+                .padding(.bottom, 3)
+                .help("On: every device gets this command. Off: each device row has its own menu.")
+                if state.usesPort {
                     field("Port") { IntField(value: $state.port, range: 1...65535, placeholder: "443").frame(width: 72) }
                 }
                 Spacer(minLength: 0)
             }
-            if state.command == .custom {
+            if state.usesCustom {
                 TextField("ping -t -l 1400 {ip}     ({ip} is where each address goes)", text: $state.custom)
                     .font(.system(.body, design: .monospaced))
             }
-            field("Devices") {
-                TextField(".1  .3  .5  .9", text: $state.targetsText, axis: .vertical)
-                    .lineLimit(1...3)
-                    .font(.system(.body, design: .monospaced))
+            HStack(alignment: .top, spacing: 16) {
+                field("Devices, one per line") {
+                    DeviceList(text: $state.targetsText).frame(width: 180)
+                }
+                field(state.applyToAll ? "What will run" : "What will run (a command per device)") {
+                    preview
+                }
             }
-            Text("Only the end of each address: .1, or .3 .5 .9, or .36.200 for the other half of a /23. Full addresses and ranges (.10-.20) work too.")
+            Text("Only the end of each address: .1, or .36.200 for the other half of a /23. Full addresses and ranges (.10-.20) work too. Untick a device to leave it out this time.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if let note = state.parsed.note { Text(note).font(.caption).foregroundStyle(.orange) }
-            preview
             HStack(spacing: 12) {
                 Button(action: { state.send() }) { Text(sendTitle).frame(minWidth: 240) }
                     .buttonStyle(.borderedProminent)
@@ -185,30 +193,55 @@ struct MultiPingView: View {
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(nsColor: .separatorColor)))
     }
 
-    @ViewBuilder private var preview: some View {
+    /// One row per address, in the order typed: a check box to leave it out, the full address, its command
+    /// (a menu of its own while Apply to all is off), the exact line, and what UniFi calls it when known.
+    private var preview: some View {
         let targets = state.targets
-        if !targets.isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(Array(targets.enumerated()), id: \.offset) { _, t in
-                    HStack(alignment: .firstTextBaseline, spacing: 10) {
-                        if let ip = t.ip {
-                            Text(ip.description).font(.system(.body, design: .monospaced)).frame(width: 130, alignment: .leading)
+        return VStack(alignment: .leading, spacing: 4) {
+            if targets.isEmpty {
+                Text("Type the addresses on the left. Each one gets its own window.")
+                    .font(.callout).foregroundStyle(.tertiary)
+            }
+            ForEach(Array(targets.enumerated()), id: \.offset) { _, t in
+                let included = state.isIncluded(t)
+                HStack(alignment: .center, spacing: 8) {
+                    RoundToggle(symbol: "checkmark", label: "Send to \(t.ip?.description ?? t.input)", isOn: includedBinding(t), size: 18, emptyWhenOff: true)
+                        .help(included ? "Ticked: this device gets a window. Untick to leave it out." : "Left out this time.")
+                    if let ip = t.ip {
+                        Text(ip.description).font(.system(.body, design: .monospaced)).frame(width: 120, alignment: .leading)
+                        Picker("Command for \(ip)", selection: commandBinding(t)) {
+                            ForEach(PingCommand.allCases) { Text($0.shortTitle).tag($0) }
+                        }
+                        .labelsHidden().frame(width: 112).controlSize(.small)
+                        .disabled(state.applyToAll || !included)
+                        .help(state.applyToAll ? "Untick Apply to all to choose per device." : "The command for this device.")
+                        VStack(alignment: .leading, spacing: 1) {
                             Text(state.line(for: t)).font(.system(.callout, design: .monospaced)).foregroundStyle(.secondary)
                                 .lineLimit(1).truncationMode(.middle)
-                            if !t.insideNetwork { Text("outside /\(state.prefix)").font(.caption).foregroundStyle(.orange) }
                             if let note = state.unifiNote(for: t) { Text(note).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
-                        } else {
-                            Text(t.input).font(.system(.body, design: .monospaced)).foregroundStyle(.red).frame(width: 130, alignment: .leading)
-                            Text(t.problem ?? "").font(.caption).foregroundStyle(.red)
                         }
-                        Spacer(minLength: 0)
+                        if !t.insideNetwork { Text("outside /\(state.prefix)").font(.caption).foregroundStyle(.orange) }
+                    } else {
+                        Text(t.input).font(.system(.body, design: .monospaced)).foregroundStyle(.red).frame(width: 120, alignment: .leading)
+                        Text(t.problem ?? "").font(.caption).foregroundStyle(.red)
                     }
+                    Spacer(minLength: 0)
                 }
+                .opacity(included ? 1 : 0.45)
             }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
         }
+        .padding(10)
+        .frame(maxWidth: .infinity, minHeight: 128, alignment: .topLeading)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+        .onChange(of: state.targetsText) { _ in state.pruneChoices() }
+    }
+
+    private func includedBinding(_ t: PingTarget) -> Binding<Bool> {
+        Binding(get: { state.isIncluded(t) }, set: { state.setIncluded($0, for: t) })
+    }
+
+    private func commandBinding(_ t: PingTarget) -> Binding<PingCommand> {
+        Binding(get: { state.command(for: t) }, set: { state.setCommand($0, for: t) })
     }
 
     private var sendTitle: String {
@@ -226,6 +259,32 @@ struct MultiPingView: View {
             Text(label).font(.caption).foregroundStyle(.secondary)
             content()
         }
+    }
+}
+
+/// The list of addresses, one per line, growing with what is typed.
+private struct DeviceList: View {
+    @Binding var text: String
+
+    private var lines: Int { text.components(separatedBy: "\n").count }
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            TextEditor(text: $text)
+                .font(.system(.body, design: .monospaced))
+                .scrollContentBackground(.hidden)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 5)
+            if text.isEmpty {
+                Text(".1\n.3\n.5\n.9")
+                    .font(.system(.body, design: .monospaced)).foregroundStyle(.tertiary)
+                    .padding(.horizontal, 9).padding(.vertical, 5)
+                    .allowsHitTesting(false)
+            }
+        }
+        .frame(height: CGFloat(min(max(lines, 5), 16)) * 19 + 14)
+        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color(nsColor: .separatorColor)))
     }
 }
 

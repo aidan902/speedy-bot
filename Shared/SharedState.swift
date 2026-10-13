@@ -36,6 +36,10 @@ enum SpeedyShared {
     static let mpCustomKey = "mpCustom"
     static let mpOpenViaKey = "mpOpenVia"
     static let mpSlowKey = "mpSlowRemote"
+    /// One command for every device, or a command per device (kept by address), and devices left out.
+    static let mpApplyToAllKey = "mpApplyToAll"
+    static let mpRowCommandsKey = "mpRowCommands"
+    static let mpExcludedKey = "mpExcluded"
     /// The UniFi controller (the API key itself is in the keychain).
     static let unifiURLKey = "unifiURL"
     static let unifiTrustKey = "unifiTrustCertificate"
