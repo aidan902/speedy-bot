@@ -139,7 +139,7 @@ enum LaunchScript {
 
     private static func quoted(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "''") + "'" }
 
-    /// `'-noe -c ping -t 172.16.37.'+$i` for a line that has the last octet in it (once or several times).
+    /// `'-NoExit -Command ping -t 172.16.37.'+$i` for a line that has the last octet in it (once or several times).
     private static func loopArgument(_ text: String) -> String {
         var expr = text.components(separatedBy: octet).map(quoted).joined(separator: "+$i+")
         if expr.hasSuffix("+''") { expr.removeLast(3) }
@@ -160,9 +160,9 @@ enum LaunchScript {
         return order.map { template in
             let list = octets[template]!
             if list.count == 1 {
-                return "start powershell " + quoted("-noe -c " + template.replacingOccurrences(of: octet, with: String(list[0])))
+                return "start powershell " + quoted("-NoExit -Command " + template.replacingOccurrences(of: octet, with: String(list[0])))
             }
-            return "foreach($i in \(list.map(String.init).joined(separator: ","))){start powershell (\(loopArgument("-noe -c " + template)))}"
+            return "foreach($i in \(list.map(String.init).joined(separator: ","))){start powershell (\(loopArgument("-NoExit -Command " + template)))}"
         }
     }
 
@@ -170,9 +170,11 @@ enum LaunchScript {
     /// window count), then tiles exactly those. No double quotes anywhere (the whole line travels inside
     /// `-c "…"`) and no percent signs (the Run dialog expands %NAME% pairs).
     static func arrange(count: Int, how: Int) -> String {
-        "$q=[char]34;Add-Type -Name W -Namespace U -Mem ('[DllImport('+$q+'user32.dll'+$q+')]public static extern int TileWindows(IntPtr p,int h,IntPtr r,int c,IntPtr[] k);');"
+        "$q=[char]34;try{Add-Type -Name W -Namespace U -Mem ('[DllImport('+$q+'user32.dll'+$q+')]public static extern int TileWindows(IntPtr p,int h,IntPtr r,int c,IntPtr[] k);');"
         + "$t=0;do{sleep -m 300;$n=@(&$f|?{$b -notcontains $_});$t++}while($n.Count -lt \(count) -and $t -lt 40);"
-        + "[U.W]::TileWindows(0,\(how),0,$n.Count,[IntPtr[]]$n)"
+        + "[U.W]::TileWindows(0,\(how),0,$n.Count,[IntPtr[]]$n)}"
+        // Compiling that helper can be refused on a locked-down machine: then the desktop's own tiling, which takes every window.
+        + "catch{sleep 3;$x=New-Object -Com Shell.Application;if(\(how)){$x.TileHorizontally()}else{$x.TileVertically()}}"
     }
 
     static let handles = "$f={gps powershell,WindowsTerminal -ea 0|select -exp MainWindowHandle|?{$_ -ne 0}};$b=@(&$f);"
@@ -193,9 +195,9 @@ enum LaunchScript {
         guard !windows.isEmpty, tile == .off else { return nil }
         let line: String
         if windows.count == 1 {
-            line = "powershell -noe -c \"\(windows[0].command.line(ip: windows[0].ip.description, port: port, custom: custom))\""
+            line = "powershell -NoExit -Command \"\(windows[0].command.line(ip: windows[0].ip.description, port: port, custom: custom))\""
         } else {
-            line = "powershell -w hidden -c \"\(statements(windows, port: port, custom: custom).joined(separator: ";"))\""
+            line = "powershell -Command \"\(statements(windows, port: port, custom: custom).joined(separator: ";"))\""
         }
         return line.count <= runDialogLimit ? line : nil
     }
@@ -445,8 +447,8 @@ final class MultiPingState: ObservableObject {
         if openVia == .runDialog, LaunchScript.directRunLine(windows, port: port, custom: custom, tile: tile) != nil {
             return "Typed into the Run dialog (Win+R):"
         }
-        let opener = openVia == .runDialog ? "a short opener typed into the Run dialog (Win+R)" : "a short opener typed into the PowerShell window in front"
-        return "Runs from \(opener); the script itself goes over the shared clipboard, or is typed if the clipboard is not shared:"
+        let opener = openVia == .runDialog ? "a PowerShell window opened through the Run dialog (Win+R)" : "the PowerShell window in front"
+        return "Pasted into \(opener) from the shared clipboard, or typed there if the clipboard is not shared:"
     }
 
     /// The key pace for command lines: faster than clipboard typing when the tech has chosen Fast.
@@ -474,53 +476,50 @@ final class MultiPingState: ObservableObject {
         [.text(line), .key(CGKeyCode(kVK_Return))]
     }
 
-    private func runShell(_ label: String, _ steps: [RemoteShell.Step], in session: SessionWindow,
+    private func runShell(_ label: String, _ steps: [RemoteShell.Step], in session: SessionWindow, escapeStops: Bool = true,
                           progress: @escaping @MainActor @Sendable (String) -> Void) async -> RemoteShell.Outcome {
         await withCheckedContinuation { cont in
-            shell.run([RemoteShell.Group(label: label, steps: steps)], in: session, pace: pace, progress: progress) { cont.resume(returning: $0) }
+            shell.run([RemoteShell.Group(label: label, steps: steps)], in: session, pace: pace, escapeStops: escapeStops, progress: progress) { cont.resume(returning: $0) }
         }
     }
 
-    /// Runs a PowerShell script in the session with as little typing as possible. A short opener goes in
-    /// (through the Run dialog, or the PowerShell window in front); it prints "SB1234 OPEN", then takes the
-    /// script from the clipboard if ScreenConnect has shared it, printing "SB1234 RUN" as the script starts.
-    /// When the window in front did not take the opener, a window of our own is opened with Win+R. When RUN
-    /// never shows, the script is typed into the opener's window instead. `via` reports which happened.
+    /// Runs a PowerShell script in the session with as little typing as possible, and with nothing in any
+    /// command line that security software could mistake for malware. A plain PowerShell window is opened
+    /// (through the Run dialog, or the window in front) printing "SB1234 OPEN"; the script, placed on this
+    /// Mac's clipboard, is pasted into it with Ctrl+V; Return is only pressed once the screen shows that what
+    /// landed starts with "SB1234 RUN". Anything else is cleared and the script is typed instead.
+    /// `via` reports which happened.
     private func runScript(_ script: String, in session: SessionWindow, closeWhenDone: Bool,
                            progress: @escaping @MainActor @Sendable (String) -> Void) async -> (outcome: RemoteShell.Outcome, via: String) {
         let token = SessionProbe.token()
         let ownWindow = openVia == .runDialog
-        let runLine = "'SB\(token) RUN';" + script + (closeWhenDone && ownWindow ? ";[Environment]::Exit(0)" : "")
+        let runLine = "'SB\(token) RUN';" + script + (closeWhenDone && ownWindow ? ";exit" : "")
         // The script rides the clipboard only when the tech's own clipboard can be put back afterwards.
         var viaClipboard = false
         if let hold = ClipboardSwap.snapshot() {
             clipboardHold = hold
             let pb = NSPasteboard.general
             pb.clearContents()
-            pb.setString("#SB\n" + runLine, forType: .string)   // "#SB" is a comment line to PowerShell
+            pb.setString(runLine, forType: .string)   // one line: a console warns before pasting several
             viaClipboard = true
         }
-        let opener = viaClipboard
-            ? "'SB\(token) OPEN';$t=0;while(($s=gcb -r)-notlike'#SB*' -and $t -lt 30){sleep -m 100;$t++};if($s -like '#SB*'){iex $s}"
-            : "'SB\(token) OPEN'"
-        let wrapped = "powershell -noe -c \"\(opener)\""
+        let opener = "'SB\(token) OPEN'"
+        let wrapped = "powershell -NoExit -Command \"\(opener)\""
         let watch = SessionProbe.Watch(windowID: session.windowID)
         activeWatch = watch
         defer { activeWatch = nil }
         SpeedyShared.log.notice("remote script: \(script.count) characters, clipboard=\(viaClipboard), via \(self.openVia.rawValue, privacy: .public)")
         let label = "Opening PowerShell in \(session.name)…"
 
-        func started() async -> Bool {
-            guard viaClipboard else { return false }
-            return await watch.wait(timeout: 8, clipboard: false) { SessionProbe.marker($0, token: token, word: "RUN") ? true : nil } != nil
-        }
         func opened() async -> Bool {
-            await watch.wait(timeout: viaClipboard ? 3 : 10, clipboard: false) { SessionProbe.marker($0, token: token, word: "OPEN") ? true : nil } != nil
+            await watch.wait(timeout: 10, clipboard: false) { SessionProbe.marker($0, token: token, word: "OPEN") ? true : nil } != nil
+        }
+        func pasted() async -> Bool {
+            await watch.wait(timeout: 4, clipboard: false, every: 0.5) { SessionProbe.marker($0, token: token, word: "RUN") ? true : nil } != nil
         }
 
         var outcome = await runShell(label, ownWindow ? runDialogSteps(typing: wrapped) : promptSteps(typing: opener), in: session, progress: progress)
         guard outcome == .done else { releaseClipboard(); return (outcome, "none") }
-        if await started() { releaseClipboard(); return (.done, "clipboard") }
         var open = await opened()
         if !open, !ownWindow {
             // Nothing in front took the opener (no PowerShell prompt there): open a window of our own.
@@ -528,12 +527,24 @@ final class MultiPingState: ObservableObject {
             SpeedyShared.log.notice("remote script: the window in front did not answer; trying the Run dialog")
             outcome = await runShell(label, runDialogSteps(typing: wrapped), in: session, progress: progress)
             guard outcome == .done else { releaseClipboard(); return (outcome, "none") }
-            if await started() { releaseClipboard(); return (.done, "clipboard") }
             open = await opened()
         }
         guard open else {
             releaseClipboard()
             return (.stopped("The PowerShell window did not show up on screen"), "none")
+        }
+        if viaClipboard {
+            outcome = await runShell("Pasting the script…", [.chord("v", command: false, shift: false, control: true)], in: session, progress: progress)
+            guard outcome == .done else { releaseClipboard(); return (outcome, "none") }
+            if await pasted() {
+                releaseClipboard()
+                outcome = await runShell("Running…", [.key(CGKeyCode(kVK_Return))], in: session, progress: progress)
+                return (outcome, outcome == .done ? "clipboard" : "none")
+            }
+            // The remote clipboard was not ours (not shared): take back whatever was pasted, then type.
+            SpeedyShared.log.notice("remote script: the paste was not ours; clearing the line and typing instead")
+            _ = await runShell("Clearing…", [.key(CGKeyCode(kVK_Escape)), .wait(ms: 150), .chord("c", command: false, shift: false, control: true), .wait(ms: 200)],
+                               in: session, escapeStops: false, progress: progress)
         }
         releaseClipboard()
         progress("Typing the script into \(session.name)…")

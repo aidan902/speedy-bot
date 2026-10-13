@@ -71,8 +71,8 @@ enum SessionWindows {
 final class RemoteShell {
     enum Step: Sendable {
         /// A shortcut on a letter key. Cmd reaches a Windows session as the Windows key, so
-        /// `.chord("r", command: true, shift: false)` is Win+R there.
-        case chord(Character, command: Bool, shift: Bool)
+        /// `.chord("r", command: true, shift: false)` is Win+R there; Control stays Control (Ctrl+V pastes).
+        case chord(Character, command: Bool, shift: Bool, control: Bool = false)
         case text(String)
         case key(CGKeyCode)
         case wait(ms: Int)
@@ -96,7 +96,7 @@ final class RemoteShell {
     }
 
     private enum PreparedStep: Sendable {
-        case chord(CGKeyCode, command: Bool, shift: Bool)
+        case chord(CGKeyCode, command: Bool, shift: Bool, control: Bool)
         case text(TypingPlan)
         case key(CGKeyCode)
         case wait(Int)
@@ -111,7 +111,8 @@ final class RemoteShell {
 
     func cancel() { cancelled.set(true) }
 
-    func run(_ groups: [Group], in session: SessionWindow, pace: TypingOptions,
+    /// `escapeStops`: Esc on this Mac stops the run (and is swallowed). Off for a run that itself posts Esc.
+    func run(_ groups: [Group], in session: SessionWindow, pace: TypingOptions, escapeStops: Bool = true,
              progress: @escaping @MainActor @Sendable (String) -> Void,
              completion: @escaping @MainActor @Sendable (Outcome) -> Void) {
         guard !running else { return }
@@ -128,9 +129,9 @@ final class RemoteShell {
             var steps: [PreparedStep] = []
             for s in g.steps {
                 switch s {
-                case .chord(let ch, let command, let shift):
+                case .chord(let ch, let command, let shift, let control):
                     guard let ks = keyMap.map[ch] else { completion(.untypeable(String(ch))); return }
-                    steps.append(.chord(ks.keyCode, command: command, shift: shift || ks.shift))
+                    steps.append(.chord(ks.keyCode, command: command, shift: shift || ks.shift, control: control))
                 case .text(let t):
                     let plan = TextTyper.plan(t, keyMap: keyMap, options: options)
                     guard plan.skipped.isEmpty else {
@@ -157,10 +158,12 @@ final class RemoteShell {
             let focus = FocusProbe.capture(pid: session.pid)
             if FocusProbe.isChatOrStatus(focus.title) { self.finish(.chatWindow, completion: completion); return }
             self.inFront.set(true)
-            if self.escKey == nil {
-                self.escKey = GlobalHotKey(keyCode: kVK_Escape, carbonModifiers: 0) { [weak self] in self?.cancelled.set(true) }
+            if escapeStops {
+                if self.escKey == nil {
+                    self.escKey = GlobalHotKey(keyCode: kVK_Escape, carbonModifiers: 0) { [weak self] in self?.cancelled.set(true) }
+                }
+                self.escKey?.register()
             }
-            self.escKey?.register()
             self.activation = NSWorkspace.shared.notificationCenter.addObserver(
                 forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
@@ -228,8 +231,8 @@ final class RemoteShell {
             for step in g.steps {
                 if let why = blocked() { return .stopped(why) }
                 switch step {
-                case .chord(let code, let command, let shift):
-                    TextTyper.postChord(code, command: command, shift: shift, source: source)
+                case .chord(let code, let command, let shift, let control):
+                    TextTyper.postChord(code, command: command, shift: shift, control: control, source: source)
                 case .text(let plan):
                     let posted = TextTyper.post(plan, options: options) { blocked() != nil }
                     if posted < plan.keys.count { return .stopped(blocked() ?? "Stopped") }

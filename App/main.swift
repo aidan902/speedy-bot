@@ -153,25 +153,25 @@ if CommandLine.arguments.contains("--selftest") {
     expect("unifi url", UniFiConfig.normalize("unifi.fm.net/"), "https://unifi.fm.net")
     let w = { (ip: String, c: PingCommand) in LaunchScript.Window(ip: IPv4(ip)!, command: c) }
     expect("launch one", LaunchScript.directRunLine([w("172.16.37.4", .pingForever)], port: 443, custom: "", tile: .off) ?? "nil",
-           "powershell -noe -c \"ping -t 172.16.37.4\"")
+           "powershell -NoExit -Command \"ping -t 172.16.37.4\"")
     expect("launch loop", LaunchScript.directRunLine([w("172.16.37.4", .pingForever), w("172.16.37.5", .pingForever), w("172.16.37.9", .pingForever)], port: 443, custom: "", tile: .off) ?? "nil",
-           "powershell -w hidden -c \"foreach($i in 4,5,9){start powershell ('-noe -c ping -t 172.16.37.'+$i)}\"")
+           "powershell -Command \"foreach($i in 4,5,9){start powershell ('-NoExit -Command ping -t 172.16.37.'+$i)}\"")
     expect("launch mixed", LaunchScript.body([w("172.16.37.4", .pingForever), w("172.16.37.5", .tracert), w("10.0.0.7", .pingForever)], port: 443, custom: "", tile: .off),
-           "start powershell '-noe -c ping -t 172.16.37.4';start powershell '-noe -c tracert -d 172.16.37.5';start powershell '-noe -c ping -t 10.0.0.7'")
+           "start powershell '-NoExit -Command ping -t 172.16.37.4';start powershell '-NoExit -Command tracert -d 172.16.37.5';start powershell '-NoExit -Command ping -t 10.0.0.7'")
     expect("launch arp loop", LaunchScript.statements([w("172.16.37.4", .arp), w("172.16.37.5", .arp)], port: 443, custom: "").joined(separator: ";"),
-           "foreach($i in 4,5){start powershell ('-noe -c ping -n 1 172.16.37.'+$i+' | Out-Null; arp -a 172.16.37.'+$i)}")
+           "foreach($i in 4,5){start powershell ('-NoExit -Command ping -n 1 172.16.37.'+$i+' | Out-Null; arp -a 172.16.37.'+$i)}")
     expect("launch custom quote", LaunchScript.statements([w("172.16.37.4", .custom)], port: 443, custom: "ping -t {ip} -l 1400 'x'").joined(separator: ";"),
-           "start powershell '-noe -c ping -t 172.16.37.4 -l 1400 ''x'''")
+           "start powershell '-NoExit -Command ping -t 172.16.37.4 -l 1400 ''x'''")
     let tiled = LaunchScript.body([w("172.16.37.4", .ping), w("172.16.37.5", .ping)], port: 443, custom: "", tile: .stacked)
     expect("tile not direct", LaunchScript.directRunLine([w("172.16.37.4", .ping)], port: 443, custom: "", tile: .stacked) ?? "nil", "nil")
     expect("tile baseline", tiled.hasPrefix(LaunchScript.handles) ? "yes" : "no", "yes")
-    expect("tile call", tiled.hasSuffix("-lt 2 -and $t -lt 40);[U.W]::TileWindows(0,1,0,$n.Count,[IntPtr[]]$n)") ? "yes" : "no", "yes")
+    expect("tile call", tiled.contains("-lt 2 -and $t -lt 40);[U.W]::TileWindows(0,1,0,$n.Count,[IntPtr[]]$n)}catch{") && tiled.hasSuffix("$x.TileHorizontally()}else{$x.TileVertically()}}") ? "yes" : "no", "yes")
     expect("tile no double quotes", tiled.contains("\"") ? "has quotes" : "clean", "clean")
     expect("tile no percent signs", tiled.contains("%") ? "has percent" : "clean", "clean")
     let many = (1...8).map { w("10.0.\($0).1", .pingForever) }   // eight lone addresses: well past the Run dialog's limit
     expect("long goes the other way", LaunchScript.directRunLine(many, port: 443, custom: "", tile: .off) ?? "nil", "nil")
     expect("two groups still direct", LaunchScript.directRunLine([w("172.16.37.4", .ping), w("172.16.37.5", .ping), w("172.16.36.9", .ping)], port: 443, custom: "", tile: .off) ?? "nil",
-           "powershell -w hidden -c \"foreach($i in 4,5){start powershell ('-noe -c ping 172.16.37.'+$i)};start powershell '-noe -c ping 172.16.36.9'\"")
+           "powershell -Command \"foreach($i in 4,5){start powershell ('-NoExit -Command ping 172.16.37.'+$i)};start powershell '-NoExit -Command ping 172.16.36.9'\"")
     expect("marker open", SessionProbe.marker("PS C:\\> x\nSB7342 OPEN\n", token: "7342", word: "OPEN") ? "yes" : "no", "yes")
     expect("marker spaced", SessionProbe.marker("SB 7342OPEN", token: "7342", word: "OPEN") ? "yes" : "no", "yes")
     expect("marker other", SessionProbe.marker("SB7342 RUN", token: "7342", word: "OPEN") ? "yes" : "no", "no")
