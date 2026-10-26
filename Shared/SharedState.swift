@@ -47,6 +47,10 @@ enum SpeedyShared {
     static let unifiTrustKey = "unifiTrustCertificate"
     /// "on", "off" or "auto" (only while a ScreenConnect session is open). `enabled` mirrors "not off" for the control.
     static let modeKey = "mode"
+    /// The mode Speedy Bot goes back to when it is switched on again from outside (On or Auto).
+    static let lastOnModeKey = "lastOnMode"
+    /// speedybot://toggle, on, off, auto, start, show, multiping (a Logitech keypad key, Shortcuts, a script).
+    static let urlScheme = "speedybot"
     /// In the pointer-rest mode: a screenshot older than this many seconds needs a double-click in ChatGPT instead.
     static let staleDoubleClickKey = "staleDoubleClick"
     static let staleAfterKey = "staleAfterSeconds"

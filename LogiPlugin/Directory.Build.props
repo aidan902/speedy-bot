@@ -1,0 +1,6 @@
+<Project>
+  <!-- Build intermediates go to ~/Library/Caches, never into this folder (it may be iCloud-synced). -->
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>$(HOME)/Library/Caches/speedy-bot-build/logi-plugin/obj/</BaseIntermediateOutputPath>
+  </PropertyGroup>
+</Project>

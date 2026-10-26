@@ -24,6 +24,8 @@ final class AppState: ObservableObject {
     /// Off / On / Auto. Auto means "only while a ScreenConnect session is open".
     @Published var mode: MasterMode {
         didSet {
+            if mode != .off { SpeedyShared.defaults.set(mode.rawValue, forKey: SpeedyShared.lastOnModeKey) }
+            if mode != oldValue { publishState() }
             guard !reloading, mode != oldValue else { return }
             SpeedyShared.defaults.set(mode.rawValue, forKey: SpeedyShared.modeKey)
             SpeedyShared.defaults.set(mode != .off, forKey: SpeedyShared.enabledKey)   // what the Control Center control shows
@@ -164,6 +166,7 @@ final class AppState: ObservableObject {
         guard open != screenConnectOpen else { return }
         if !open { sessionClosedAt = Date() }
         screenConnectOpen = open
+        publishState()
         SpeedyShared.log.notice("ScreenConnect session is \(open ? "open" : "closed", privacy: .public)")
         apply()
     }
@@ -178,6 +181,7 @@ final class AppState: ObservableObject {
         }
         SpeedyShared.defaults.set(true, forKey: SpeedyShared.appRunningKey)
         reloadControl()
+        publishState()
         screenshot.onScreenshot = { [weak self] ref in self?.saveScreenshotIfWanted(ref) }
         apply()
         // The Accessibility switch lives in System Settings; notice when the tech flips it.
@@ -198,6 +202,7 @@ final class AppState: ObservableObject {
         ScreencapturePrefs.restore()
         SpeedyShared.defaults.set(false, forKey: SpeedyShared.appRunningKey)
         reloadControl()
+        publishState(running: false)
     }
 
     private func reloadControl() {
@@ -218,6 +223,72 @@ final class AppState: ObservableObject {
         pasteTrigger = SpeedyShared.defaults.string(forKey: SpeedyShared.pasteTriggerKey).flatMap(PasteTrigger.init(rawValue:)) ?? .hover
         reloading = false
         apply()
+        publishState()
+    }
+
+    // MARK: control from outside (a Logitech keypad key, Shortcuts, a script)
+
+    /// The mode Speedy Bot goes back to when it is switched on again (On or Auto; Auto the first time).
+    var lastOnMode: MasterMode {
+        let stored = SpeedyShared.defaults.string(forKey: SpeedyShared.lastOnModeKey).flatMap(MasterMode.init(rawValue:))
+        return stored == nil || stored == .off ? .auto : stored!
+    }
+
+    /// Off, or back to whichever of On and Auto it was in before.
+    func toggle() { mode = mode == .off ? lastOnMode : .off }
+
+    /// Carries out a speedybot:// link. False when it is not one, or names no known action.
+    @discardableResult
+    func handle(url: URL) -> Bool {
+        guard let action = SpeedyLink.action(of: url) else {
+            SpeedyShared.log.notice("ignored link: \(url.absoluteString, privacy: .public)")
+            return false
+        }
+        SpeedyShared.log.notice("link: \(action.rawValue, privacy: .public)")
+        switch action {
+        case .toggle: toggle(); announceMode()
+        case .on: mode = .on; announceMode()
+        case .auto: mode = .auto; announceMode()
+        case .off: mode = .off; announceMode()
+        case .enable: mode = lastOnMode; announceMode()
+        case .start: publishState()
+        case .show: page = .switches; showWindow?()
+        case .multiPing: page = .multiPing; showWindow?()
+        }
+        return true
+    }
+
+    /// A short note on screen, since a key press on a keypad gives no other sign.
+    private func announceMode() {
+        switch mode {
+        case .off: Toast.show("Speedy Bot is off", seconds: 1.4)
+        case .on: Toast.show("Speedy Bot is on", seconds: 1.4)
+        case .auto: Toast.show(screenConnectOpen ? "Speedy Bot is on (Auto)" : "Speedy Bot: Auto, waiting for a ScreenConnect session", seconds: 1.8)
+        }
+    }
+
+    /// Where Speedy Bot writes what it is doing, for other tools to show (the Logitech keypad key).
+    static var stateFileURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Speedy Bot", isDirectory: true)
+            .appendingPathComponent("state.json")
+    }
+
+    /// Writes the state file. Small and written whole, so a reader never sees half of it.
+    func publishState(running: Bool = true) {
+        let info: [String: Any] = [
+            "mode": mode.rawValue,
+            "active": running && active,
+            "sessionOpen": screenConnectOpen,
+            "running": running,
+            "pid": Int(ProcessInfo.processInfo.processIdentifier),
+            "version": Updater.currentVersion,
+            "updatedAt": Int(Date().timeIntervalSince1970),
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: info, options: [.sortedKeys]) else { return }
+        let url = Self.stateFileURL
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: url, options: .atomic)
     }
 
     private func changed(_ key: String, _ value: Bool) {

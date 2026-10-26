@@ -1,0 +1,26 @@
+type: plugin4
+name: SpeedyBot
+displayName: Speedy Bot
+version: 0.7.1
+author: FM
+copyright: Copyright © 2026 FM
+description: >2
+
+  Turn Speedy Bot on and off from a key. The key shows Speedy Bot's live state:
+  green when it is on, blue while Auto waits for a ScreenConnect session, grey when it is off.
+homePageUrl: https://github.com/aidan902/speedy-bot
+supportPageUrl: https://github.com/aidan902/speedy-bot
+icon256x256: Icon256x256.png
+supportedDevices:
+- MxCreativeKeypad
+- ActionsRing
+- LoupedeckCtFamily
+- LoupedeckPlusFamily
+pluginCapabilities:
+- HasNoApplication
+pluginFileName: SpeedyBotPlugin.dll
+pluginFolderWin: .
+pluginFolderMac: .
+backgroundColor: 4281193572
+foregroundColor: 4294967295
+textColor: 4294967295

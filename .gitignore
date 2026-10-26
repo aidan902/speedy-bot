@@ -17,3 +17,8 @@ Controls/SpeedyBotControls.entitlements
 
 xcuserdata/
 .DS_Store
+
+# Logi plugin build products (LogiPlugin/build.sh builds into ~/Library/Caches)
+LogiPlugin/bin/
+LogiPlugin/obj/
+*.lplug4

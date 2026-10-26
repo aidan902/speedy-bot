@@ -22,6 +22,19 @@ A small Mac app for techs who live in ScreenConnect and ChatGPT. It removes the 
    - **Open N PowerShell windows** brings the session to the front and opens every window at once, then tiles the new windows side by side or stacked (your choice). A plain PowerShell window is opened through the Run dialog (Win+R) and the script is pasted into it from ScreenConnect's shared clipboard; Speedy Bot presses Return only after it has seen on screen that the pasted text is its own, and types the script instead when the clipboard is not shared (the Run dialog itself only takes 259 characters). The PowerShell that runs is shown on the page. Esc stops the typing. If Win+R does not reach your remote, switch to "the PowerShell window that is in front".
    - **UniFi.** With your UniFi Network controller and an API key under Settings…, the page notes which site, switch and port the remote machine is on (and labels the devices you ping with what UniFi calls them). The key is kept in your keychain. Create one in UniFi Network under Settings › Control Plane › Integrations.
 
+6. **Control from outside: a Logitech keypad key, Shortcuts or a script.** Speedy Bot answers `speedybot://` links:
+
+   | Link | What it does |
+   |---|---|
+   | `speedybot://toggle` | Off, or back to whichever of On and Auto you were using |
+   | `speedybot://on` / `auto` / `off` | Switch to that mode |
+   | `speedybot://start` | Just make sure Speedy Bot is running |
+   | `speedybot://show` / `multiping` | Open the window, or the Multi Ping page |
+
+   A link that has to start Speedy Bot starts it in the background, without its window. Each change shows a short note on screen. Links only switch modes and open the window; nothing a link can ask for types, pastes or sends anything. From Terminal: `open -g speedybot://toggle`.
+
+   **Logitech MX Creative Keypad (Logi Options+).** Install the Speedy Bot plugin from the `LogiPlugin` folder and drag **Speedy Bot On/Off** onto a key: the key shows the live state (green On, blue Auto waiting for a session, grey Off) and a press toggles it. Without the plugin, give a key the built-in **Open URL** action with `speedybot://toggle`.
+
 ## Install
 
 Download [SpeedyBot.dmg](https://github.com/aidan902/speedy-bot/releases/latest/download/SpeedyBot.dmg), open it, and drag Speedy Bot into Applications. Open it from Applications, not from the disk image.

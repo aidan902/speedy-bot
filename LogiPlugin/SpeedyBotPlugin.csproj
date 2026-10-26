@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Logi Plugin Service 6.4 (Logi Options+) runs plugins on its own .NET 10 runtime; PluginApi.dll is built
+       against .NET 10, so the plugin targets it too. Build with LogiPlugin/build.sh. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Loupedeck.SpeedyBotPlugin</RootNamespace>
+    <AssemblyName>SpeedyBotPlugin</AssemblyName>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <Version>0.7.1</Version>
+    <PluginApiPath Condition="'$(PluginApiPath)' == ''">/Applications/Utilities/LogiPluginService.app/Contents/MonoBundle/PluginApi.dll</PluginApiPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="PluginApi">
+      <HintPath>$(PluginApiPath)</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <EmbeddedResource Include="src/Resources/AppIcon256.png" LogicalName="SpeedyBot.AppIcon256.png" />
+  </ItemGroup>
+</Project>

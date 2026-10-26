@@ -9,6 +9,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var setup: SetupWindowController?
     private var observers: [DarwinObserver] = []
     private var isSecondCopy = false
+    /// speedybot:// links that arrived before the app had finished starting (a link that launched it).
+    private var pendingLinks: [URL] = []
+    private var launchedByLink = false
+    private var started = false
+
+    /// The link handler has to be in place before launching finishes, or the link that started the app is lost.
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(handleGetURL(_:withReply:)),
+                                                     forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL))
+    }
+
+    /// speedybot://toggle and friends, from a Logitech keypad key, Shortcuts or a script.
+    @objc func handleGetURL(_ event: NSAppleEventDescriptor, withReply reply: NSAppleEventDescriptor) {
+        guard let text = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
+              let url = URL(string: text) else { return }
+        if started {
+            state.handle(url: url)
+        } else {
+            launchedByLink = true
+            pendingLinks.append(url)
+        }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Opened straight from the disk image or the Downloads folder: macOS runs such a copy from a temporary,
@@ -52,6 +74,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let event = NSAppleEventManager.shared().currentAppleEvent
         let launchedAtLogin = event?.eventID == AEEventID(kAEOpenApplication)
             && event?.paramDescriptor(forKeyword: AEKeyword(keyAEPropData))?.enumCodeValue == OSType(keyAELaunchedAsLogInItem)
+        // Started by a link (a keypad key, a script): stay in the background like a login launch.
+        launchedByLink = launchedByLink || (event?.eventClass == AEEventClass(kInternetEventClass) && event?.eventID == AEEventID(kAEGetURL))
 
         MainMenu.install(target: self)
         let window = MainWindowController(state: state)
@@ -64,14 +88,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DarwinObserver(name: SpeedyShared.showWindowNotification) { [weak self] in self?.window?.show() },
         ]
         state.start()
-        SpeedyShared.log.notice("launched; accessibility=\(Permissions.accessibilityTrusted) atLogin=\(launchedAtLogin) pasteboardAccess=\(Permissions.pasteboardAccess, privacy: .public)")
+        started = true
+        for link in pendingLinks { state.handle(url: link) }
+        pendingLinks = []
+        SpeedyShared.log.notice("launched; accessibility=\(Permissions.accessibilityTrusted) atLogin=\(launchedAtLogin) byLink=\(self.launchedByLink) pasteboardAccess=\(Permissions.pasteboardAccess, privacy: .public)")
         // The Control Center control starts the app in the background; that should not throw a window up either.
         let quietStamp = SpeedyShared.defaults.double(forKey: SpeedyShared.quietLaunchKey)
         let launchedByControl = abs(Date().timeIntervalSince1970 - quietStamp) < 15
         SpeedyShared.defaults.removeObject(forKey: SpeedyShared.quietLaunchKey)
         if !SpeedyShared.bool(SpeedyShared.setupDoneKey, default: false) {
             showSetup(askImmediately: true)   // first run: which chat app, and every permission, right away
-        } else if !(launchedAtLogin || launchedByControl) || !Permissions.accessibilityTrusted {
+        } else if !(launchedAtLogin || launchedByControl || launchedByLink) || !Permissions.accessibilityTrusted {
             window.show()
         }
     }
@@ -151,6 +178,16 @@ if CommandLine.arguments.contains("--selftest") {
     expect("custom no placeholder", PingCommand.custom.line(ip: "1.2.3.4", port: 443, custom: "tracert"), "tracert 1.2.3.4")
     expect("session name", SessionWindow(pid: 1, windowID: 1, title: "ScreenConnect - FLC-JACKSON - Connected", bounds: .zero).name, "FLC-JACKSON")
     expect("unifi url", UniFiConfig.normalize("unifi.fm.net/"), "https://unifi.fm.net")
+    let link = { (s: String) in SpeedyLink.action(of: URL(string: s)!)?.rawValue ?? "nil" }
+    expect("link toggle", link("speedybot://toggle"), "toggle")
+    expect("link opaque", link("speedybot:toggle"), "toggle")
+    expect("link triple slash", link("speedybot:///off"), "off")
+    expect("link case", link("SPEEDYBOT://Auto"), "auto")
+    expect("link alias", link("speedybot://disable"), "off")
+    expect("link multiping", link("speedybot://multiping"), "multiping")
+    expect("link bare", link("speedybot://"), "start")
+    expect("link unknown", link("speedybot://typeit"), "nil")
+    expect("link other scheme", link("https://toggle"), "nil")
     let w = { (ip: String, c: PingCommand) in LaunchScript.Window(ip: IPv4(ip)!, command: c) }
     expect("launch one", LaunchScript.directRunLine([w("172.16.37.4", .pingForever)], port: 443, custom: "", tile: .off) ?? "nil",
            "powershell -NoExit -Command \"ping -t 172.16.37.4\"")
