@@ -135,7 +135,8 @@ final class AppState: ObservableObject {
         betaUpdates = SpeedyShared.bool(SpeedyShared.betaUpdatesKey, default: !Updater.runningCopyIsNotarized)
         screenshotPaste = SpeedyShared.bool(SpeedyShared.screenshotPasteKey, default: true)
         remoteTyping = SpeedyShared.bool(SpeedyShared.remoteTypingKey, default: true)
-        fastTyping = SpeedyShared.bool(SpeedyShared.fastTypingKey, default: true)
+        // The Safe pace is gone from the window (2026-10-26); everyone types at the Fast pace.
+        fastTyping = true
         saveScreenshots = SpeedyShared.bool(SpeedyShared.saveScreenshotsKey, default: false)
         keepNormalScreenshots = SpeedyShared.bool(SpeedyShared.keepNormalScreenshotsKey, default: true)
         pasteTrigger = SpeedyShared.defaults.string(forKey: SpeedyShared.pasteTriggerKey).flatMap(PasteTrigger.init(rawValue:)) ?? .hover
@@ -158,7 +159,10 @@ final class AppState: ObservableObject {
         if let stored, stored != .off { return stored }
         // A fresh install starts in Auto: it only does anything while a ScreenConnect session is open, so it
         // leaves the Mac alone the rest of the time until the tech decides otherwise.
-        return stored == nil ? .auto : .on
+        if stored == nil { return .auto }
+        // Switched back on (the Control Center control) after being Off: whichever of On and Auto it was using.
+        let last = SpeedyShared.defaults.string(forKey: SpeedyShared.lastOnModeKey).flatMap(MasterMode.init(rawValue:))
+        return last == nil || last == .off ? .on : last!
     }
 
     private func senseScreenConnect() {
@@ -180,6 +184,9 @@ final class AppState: ObservableObject {
             })
         }
         SpeedyShared.defaults.set(true, forKey: SpeedyShared.appRunningKey)
+        // Remember the mode it starts in (setting `mode` in init does not run its didSet), so switching off and
+        // on again from outside comes back to it.
+        if mode != .off { SpeedyShared.defaults.set(mode.rawValue, forKey: SpeedyShared.lastOnModeKey) }
         reloadControl()
         publishState()
         screenshot.onScreenshot = { [weak self] ref in self?.saveScreenshotIfWanted(ref) }
@@ -217,7 +224,7 @@ final class AppState: ObservableObject {
         mode = Self.storedMode()
         screenshotPaste = SpeedyShared.bool(SpeedyShared.screenshotPasteKey, default: true)
         remoteTyping = SpeedyShared.bool(SpeedyShared.remoteTypingKey, default: true)
-        fastTyping = SpeedyShared.bool(SpeedyShared.fastTypingKey, default: true)
+        fastTyping = true
         saveScreenshots = SpeedyShared.bool(SpeedyShared.saveScreenshotsKey, default: false)
         keepNormalScreenshots = SpeedyShared.bool(SpeedyShared.keepNormalScreenshotsKey, default: true)
         pasteTrigger = SpeedyShared.defaults.string(forKey: SpeedyShared.pasteTriggerKey).flatMap(PasteTrigger.init(rawValue:)) ?? .hover
@@ -250,7 +257,7 @@ final class AppState: ObservableObject {
         case .on: mode = .on; announceMode()
         case .auto: mode = .auto; announceMode()
         case .off: mode = .off; announceMode()
-        case .enable: mode = lastOnMode; announceMode()
+        case .enable: if mode == .off { mode = lastOnMode }; announceMode()
         case .start: publishState()
         case .show: page = .switches; showWindow?()
         case .multiPing: page = .multiPing; showWindow?()

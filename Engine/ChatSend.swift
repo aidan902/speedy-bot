@@ -1,8 +1,8 @@
 // Knowing when a chat app is ready to send what was just pasted, by watching its compose area through
-// accessibility. A chat app (ChatGPT, Claude) shows a Send button that is disabled while the box is empty
-// or a picture is still uploading, and enabled the moment the message can go; while it is answering, that
-// button is replaced by a Stop button. So "ready to send" is: a Send button exists and is enabled, and no
-// Stop button is showing. Everything here is safe to call off the main thread.
+// accessibility. A chat app (ChatGPT, Claude) shows a Send button that is disabled while the box is empty or a
+// picture is still uploading, and enabled the moment the message can go; while it is answering, that button is
+// replaced by a Stop button. So "ready to send" is: a Send button exists and is enabled, and no Stop button shows.
+// Everything here is safe to call off the main thread.
 import ApplicationServices
 import Foundation
 
@@ -14,12 +14,17 @@ public struct SendButton: @unchecked Sendable {
 /// What one look at the compose area found.
 public struct ComposerScan: @unchecked Sendable {
     public let sendButton: AXUIElement?
+    /// nil when there is no Send button (or it could not be read).
+    public let sendEnabled: Bool?
     /// A Stop button is showing: the app is still answering, so nothing should be sent yet.
     public let streaming: Bool
-    /// Were any accessibility elements exposed at all (a web-based app that has not woken its tree shows none).
+    /// The window exposed its contents at all (a web-based app that has not built its tree shows only its frame).
     public let hasTree: Bool
-    /// Labelled buttons, "role:label(on/off)", a few, for the log when a send does not go through.
+    /// Labelled buttons, "label✓/✗", a few, for the log when a send does not go through.
     public let inventory: [String]
+
+    /// A Send button or a Stop button was found: the compose area can be read.
+    public var readable: Bool { sendButton != nil || streaming }
 }
 
 public enum ChatSend {
@@ -35,13 +40,49 @@ public enum ChatSend {
         return AXUIElementCopyAttributeValue(e, name as CFString, &v) == .success ? v : nil
     }
 
-    /// Makes a web-based app (ChatGPT is one) build its accessibility tree: Chromium only exposes its content
-    /// once it has been asked to be frontmost through accessibility, and tears it down again when idle.
-    public static func wakeAccessibility(pid: pid_t) {
+    // MARK: waking a web-based app's accessibility
+
+    private final class WokenList: @unchecked Sendable {
+        private let lock = NSLock()
+        private var at: [pid_t: Date] = [:]
+        /// True when this pid was not asked within `interval`, and records the ask.
+        func claim(_ pid: pid_t, interval: TimeInterval) -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            if let last = at[pid], Date().timeIntervalSince(last) < interval { return false }
+            at[pid] = Date()
+            return true
+        }
+    }
+    private static let woken = WokenList()
+
+    /// The window shows more than its frame (a quick look: stops after a few dozen elements).
+    public static func isAwake(pid: pid_t) -> Bool {
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, timeout)
-        AXUIElementSetAttributeValue(app, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+        guard let windows = attr(app, kAXWindowsAttribute) as? [AXUIElement], let window = windows.first else { return false }
+        var queue = [window]
+        var seen = 0
+        while !queue.isEmpty, seen <= 20 {
+            let e = queue.removeFirst()
+            seen += 1
+            if let kids = attr(e, kAXChildrenAttribute) as? [AXUIElement] { queue.append(contentsOf: kids) }
+        }
+        return seen > 20
     }
+
+    /// Asks a Chromium-based chat app (ChatGPT, Claude) to build its accessibility tree, WITHOUT bringing it
+    /// forward. Such apps show only their window frame to accessibility until an assistive app asks; the request
+    /// they answer is the flag VoiceOver sets, AXEnhancedUserInterface (measured: ChatGPT's compose area appears
+    /// about 2.5 s later; it ignores AXManualAccessibility). Left alone when the tree is already there, and asked
+    /// at most every 30 seconds per app.
+    public static func wakeAccessibility(pid: pid_t) {
+        guard woken.claim(pid, interval: 30), !isAwake(pid: pid) else { return }
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, timeout)
+        AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+    }
+
+    // MARK: reading the compose area
 
     /// One walk of the front window: the last Send button, whether a Stop button is showing, and a short
     /// inventory of labelled buttons. The last Send button wins because the compose box is at the bottom.
@@ -49,7 +90,7 @@ public enum ChatSend {
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, timeout)
         guard let windows = attr(app, kAXWindowsAttribute) as? [AXUIElement], let window = windows.first else {
-            return ComposerScan(sendButton: nil, streaming: false, hasTree: false, inventory: [])
+            return ComposerScan(sendButton: nil, sendEnabled: nil, streaming: false, hasTree: false, inventory: [])
         }
         var queue = [window]
         var visited = 0
@@ -74,11 +115,9 @@ public enum ChatSend {
             }
             if let kids = attr(e, kAXChildrenAttribute) as? [AXUIElement] { queue.append(contentsOf: kids) }
         }
-        return ComposerScan(sendButton: send, streaming: streaming, hasTree: visited > 20, inventory: inventory)
+        return ComposerScan(sendButton: send, sendEnabled: send.flatMap(isEnabled), streaming: streaming,
+                            hasTree: visited > 20, inventory: inventory)
     }
-
-    /// The Send button of the app's front window, or nil. Kept for the pre-paste "is there a draft?" check.
-    public static func findSendButton(pid: pid_t) -> AXUIElement? { scanComposer(pid: pid).sendButton }
 
     /// nil when the button has gone away (the page re-drew it) or cannot be read.
     public static func isEnabled(_ button: AXUIElement) -> Bool? {
@@ -86,40 +125,7 @@ public enum ChatSend {
         return attr(button, kAXEnabledAttribute) as? Bool
     }
 
-    public enum Readiness: Sendable { case ready, timedOut, unknownApp }
-
-    /// Waits until the message can be sent: a Send button is enabled and the app is not mid-answer. While the
-    /// app is still answering (a Stop button shows), it keeps waiting. Returns `unknownApp` only when no
-    /// compose area ever appears (an app whose Send button cannot be read), so the caller can fall back.
-    /// `onScan` is handed each look, for logging.
-    public static func waitUntilReady(pid: pid_t, timeout seconds: TimeInterval,
-                                      onScan: (@Sendable (ComposerScan) -> Void)? = nil) async -> (Readiness, SendButton?) {
-        wakeAccessibility(pid: pid)
-        let deadline = Date().addingTimeInterval(seconds)
-        var sawComposer = false
-        var emptyLooks = 0
-        var last = ComposerScan(sendButton: nil, streaming: false, hasTree: false, inventory: [])
-        while Date() < deadline {
-            let scan = scanComposer(pid: pid)
-            last = scan
-            if let b = scan.sendButton, !scan.streaming, isEnabled(b) == true { return (.ready, SendButton(element: b)) }
-            if scan.sendButton != nil || scan.streaming {
-                sawComposer = true
-                emptyLooks = 0
-            } else {
-                emptyLooks += 1
-                // Nothing to send and nothing answering: give a web app a few seconds to build its tree, then
-                // keep the app awake and try again.
-                if emptyLooks % 12 == 0 { wakeAccessibility(pid: pid) }
-                if !sawComposer, emptyLooks >= 24 { onScan?(scan); return (.unknownApp, nil) }   // ~6 s, never saw a composer
-            }
-            try? await Task.sleep(for: .milliseconds(250))
-        }
-        onScan?(last)
-        return (sawComposer || last.sendButton != nil ? .timedOut : .unknownApp, last.sendButton.map { SendButton(element: $0) })
-    }
-
-    /// Presses the button itself. False when the app did not take it.
+    /// Presses the button itself, which works with the app in the background. False when the app did not take it.
     public static func press(_ button: SendButton) -> Bool {
         AXUIElementPerformAction(button.element, kAXPressAction as CFString) == .success
     }

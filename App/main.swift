@@ -245,7 +245,8 @@ if CommandLine.arguments.contains("--probe-test") {
     exit(0)
 }
 
-// `--dump-chat`: show what the auto-send finder sees in the chat apps right now (needs the Accessibility grant).
+// `--dump-chat`: wake the chat apps' accessibility trees the way auto-send does (never activating them) and show
+// what the Send-button finder sees (needs the Accessibility grant).
 if CommandLine.arguments.contains("--dump-chat") {
     _ = NSApplication.shared
     let ids = ["anthropic", "openai", "chatgpt", "codex", "grok", "xai", ".x.grok"]
@@ -253,15 +254,18 @@ if CommandLine.arguments.contains("--dump-chat") {
         let b = (app.bundleIdentifier ?? "").lowercased()
         return ids.contains { b.contains($0) } && app.activationPolicy == .regular
     }
-    print("chat apps: \(apps.count); AXIsProcessTrusted=\(AXIsProcessTrusted())")
+    print("chat apps: \(apps.count); AXIsProcessTrusted=\(AXIsProcessTrusted()); front=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")")
     for app in apps {
         let pid = app.processIdentifier
+        print("== \(app.localizedName ?? "?") [\(app.bundleIdentifier ?? "?")] awake=\(ChatSend.isAwake(pid: pid))")
         ChatSend.wakeAccessibility(pid: pid)
-        Thread.sleep(forTimeInterval: 0.8)
+        for i in 1...8 where !ChatSend.isAwake(pid: pid) {
+            Thread.sleep(forTimeInterval: 0.5)
+            print("   t+\(Double(i) * 0.5)s awake=\(ChatSend.isAwake(pid: pid)) front=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")")
+        }
         let scan = ChatSend.scanComposer(pid: pid)
-        print("== \(app.localizedName ?? "?") [\(app.bundleIdentifier ?? "?")]")
-        print("   tree=\(scan.hasTree) streaming=\(scan.streaming) sendButton=\(scan.sendButton != nil ? (ChatSend.isEnabled(scan.sendButton!) == true ? "enabled" : "disabled") : "none")")
-        print("   buttons: \(scan.inventory.joined(separator: ", "))")
+        print("   tree=\(scan.hasTree) streaming=\(scan.streaming) send=\(scan.sendEnabled.map { $0 ? "enabled" : "disabled" } ?? "none") front=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")")
+        print("   buttons: \(scan.inventory.suffix(8).joined(separator: ", "))")
     }
     exit(0)
 }

@@ -260,15 +260,6 @@ struct MainView: View {
                 ShortcutRecorder(label: state.typingShortcutLabel,
                                  resetLabel: state.typingShortcut == nil ? nil : HotKeySpec.defaultLabel) { state.setTypingShortcut($0) }
             }
-            HStack {
-                Text("Typing speed")
-                Spacer()
-                Picker("Typing speed", selection: $state.fastTyping) {
-                    Text("Safe").tag(false)
-                    Text("Fast").tag(true)
-                }
-                .pickerStyle(.segmented).labelsHidden().frame(width: 130)
-            }
         }
         .frame(maxWidth: .infinity, alignment: .leading).padding(.leading, inset).padding(.trailing, 12).padding(.bottom, 12)
     }

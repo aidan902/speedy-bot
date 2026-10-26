@@ -33,6 +33,7 @@ namespace Loupedeck.SpeedyBotPlugin
 
         private readonly Object _lock = new Object();
         private Timer _timer;
+        private Boolean _reported;
 
         private SpeedyBotState() { }
 
@@ -63,6 +64,13 @@ namespace Loupedeck.SpeedyBotPlugin
                 changed = mode != this.Mode || raw != this.RawMode;
                 this.Mode = mode;
                 this.RawMode = raw;
+            }
+            // The first look after the log is available is always written: build.sh waits for this line to know
+            // the plugin really runs (the service logs "Started loading" before it knows whether loading worked).
+            if (!this._reported && this.Log != null)
+            {
+                this._reported = true;
+                this.Log.Info($"SpeedyBot plugin running; Speedy Bot is {mode}");
             }
             if (changed)
             {
