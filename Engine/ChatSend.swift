@@ -27,8 +27,10 @@ public struct ComposerState: @unchecked Sendable {
     /// The box's own label and placeholder ("Ask anything", "Work with Codex"). ChatGPT reports the placeholder
     /// as the box's value while the box is empty, so a value equal to one of these is an empty box.
     public let emptyTexts: [String]
+    /// Pictures shown in the composer (thumbnails of attached screenshots or files).
+    public let images: Int
 
-    static let unreadable = ComposerState(text: nil, sendButton: nil, sendEnabled: nil, streaming: false, buttons: [], emptyTexts: [])
+    static let unreadable = ComposerState(text: nil, sendButton: nil, sendEnabled: nil, streaming: false, buttons: [], emptyTexts: [], images: 0)
 
     /// What the tech has typed: the text without pasted pictures (U+FFFC) and white space, and "" when the box
     /// only shows its placeholder. nil when unreadable.
@@ -96,28 +98,36 @@ public enum ChatSend {
         return seen > 20
     }
 
+    /// Wakes and releases run on this one queue, in the order they were asked for.
+    private static let flagQueue = DispatchQueue(label: "net.fm.speedybot.ax-flag")
+
     /// Asks ChatGPT (Chromium-based) to build its accessibility tree WITHOUT bringing it forward. It shows only its
     /// window frame to accessibility until an assistive app asks, and the request it answers is the flag VoiceOver
     /// sets, AXEnhancedUserInterface (it ignores AXManualAccessibility). Measured: the message box appears about
-    /// 2.5 s later and stays readable with the app in the background. Left alone when the tree is already there or
-    /// the flag is already on (VoiceOver); asked at most every 30 s per app.
+    /// 2.5 s later and stays readable with the app in the background. Left alone when the flag is already on
+    /// (VoiceOver, or an earlier wake); asked at most every 30 s per app.
     public static func wakeAccessibility(pid: pid_t) {
-        guard woken.claim(pid, interval: 30), !isAwake(pid: pid) else { return }
-        let app = AXUIElementCreateApplication(pid)
-        AXUIElementSetMessagingTimeout(app, timeout)
-        if (attr(app, "AXEnhancedUserInterface") as? Bool) == true { return }
-        AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
-        woken.markOurs(pid)
+        flagQueue.async {
+            guard woken.claim(pid, interval: 30) else { return }
+            let app = AXUIElementCreateApplication(pid)
+            AXUIElementSetMessagingTimeout(app, timeout)
+            if (attr(app, "AXEnhancedUserInterface") as? Bool) == true { return }
+            AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+            woken.markOurs(pid)
+        }
     }
 
     /// Switches the flag off again on every app Speedy Bot switched it on for (auto-send off, or quitting): the app
-    /// then stops keeping its whole page available to accessibility.
-    public static func releaseAccessibility() {
-        for pid in woken.takeOurs() {
-            let app = AXUIElementCreateApplication(pid)
-            AXUIElementSetMessagingTimeout(app, timeout)
-            AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanFalse)
+    /// then stops keeping its whole page available to accessibility. `wait`: done before returning (at quit).
+    public static func releaseAccessibility(wait: Bool = false) {
+        let work: @Sendable () -> Void = {
+            for pid in woken.takeOurs() {
+                let app = AXUIElementCreateApplication(pid)
+                AXUIElementSetMessagingTimeout(app, timeout)
+                AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanFalse)
+            }
         }
+        if wait { flagQueue.sync(execute: work) } else { flagQueue.async(execute: work) }
     }
 
     /// Presses the button itself, which works with the app in the background. A slow answer is not taken as a
@@ -157,6 +167,10 @@ public final class Composer: @unchecked Sendable {
     public let windowID: CGWindowID
     private var textArea: AXUIElement?
     private var root: AXUIElement?
+    /// How many times the box had to be found again after it was first found: the page replaced it (a different
+    /// conversation, a new chat). Anything waiting to send treats that as "this is not the box I pasted into".
+    public private(set) var relocations = 0
+    private var foundOnce = false
 
     public init(pid: pid_t, windowID: CGWindowID) {
         self.pid = pid
@@ -204,6 +218,8 @@ public final class Composer: @unchecked Sendable {
         }
         textArea = box
         root = up
+        if foundOnce { relocations += 1 }
+        foundOnce = true
     }
 
     /// What the box shows now. Re-finds the box when the page has replaced it.
@@ -226,11 +242,14 @@ public final class Composer: @unchecked Sendable {
             var send: AXUIElement?
             var streaming = false
             var buttons: [String] = []
+            var images = 0
             while !queue.isEmpty, visited < 800 {
                 let e = queue.removeFirst()
                 visited += 1
                 AXUIElementSetMessagingTimeout(e, ChatSend.timeout)
-                if (ChatSend.attr(e, kAXRoleAttribute) as? String) == "AXButton" {
+                let role = ChatSend.attr(e, kAXRoleAttribute) as? String
+                if role == "AXImage" { images += 1 }
+                if role == "AXButton" {
                     let l = ChatSend.label(of: e)
                     if ChatSend.sendLabels.contains(l) { send = e }
                     if ChatSend.stopLabels.contains(l) { streaming = true }
@@ -239,7 +258,8 @@ public final class Composer: @unchecked Sendable {
                 if let kids = ChatSend.attr(e, kAXChildrenAttribute) as? [AXUIElement] { queue.append(contentsOf: kids) }
             }
             let enabled = send.flatMap { ChatSend.attr($0, kAXEnabledAttribute) as? Bool }
-            return ComposerState(text: text, sendButton: send, sendEnabled: enabled, streaming: streaming, buttons: buttons, emptyTexts: emptyTexts)
+            return ComposerState(text: text, sendButton: send, sendEnabled: enabled, streaming: streaming, buttons: buttons,
+                                 emptyTexts: emptyTexts, images: images)
         }
         return .unreadable
     }

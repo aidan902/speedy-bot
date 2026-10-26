@@ -204,6 +204,7 @@ final class AppState: ObservableObject {
     /// Put the Mac back the way it was: the screenshot settings return to the tech's own values.
     func shutdown() {
         screenshot.stop()
+        ChatSend.releaseAccessibility(wait: true)   // ChatGPT's flag goes off before the app exits
         typer.setEnabled(false)
         capture.setEnabled(false)
         ScreencapturePrefs.restore()

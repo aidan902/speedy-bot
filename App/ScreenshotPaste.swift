@@ -107,7 +107,15 @@ final class ScreenshotPasteController {
     private var pasting = false
     private(set) var source: ScreenshotSource?
     /// Pasting itself. The watchers also run for saving screenshots, so this can be off while running.
-    var pasteEnabled = true { didSet { if !pasteEnabled { disarm("paste switched off") }; syncTriggers() } }
+    var pasteEnabled = true {
+        didSet {
+            if !pasteEnabled {
+                disarm("paste switched off")
+                pendingSends.removeAll()   // nothing waiting to send may still go
+            }
+            syncTriggers()
+        }
+    }
     var trigger = PasteTrigger.hover { didSet { syncTriggers() } }
     /// Which chat apps count. Always at least one.
     var targets: Set<PasteTarget> = [.chatGPT]
@@ -130,14 +138,24 @@ final class ScreenshotPasteController {
     var autoSendFromSession = false {
         didSet {
             if autoSendFromSession, !oldValue { primeChatApps() }
-            if !autoSendFromSession, oldValue { releaseChatApps() }
+            if !autoSendFromSession, oldValue {
+                // Switched off: nothing waiting to send may still go.
+                pendingSends.removeAll()
+                deferredAutoSend = nil
+                releaseChatApps()
+            }
         }
     }
-    /// The one auto-send waiting to press Send in each chat app (by pid). A newer paste into the app replaces it.
-    private var pendingSends: [pid_t: Int] = [:]
+    /// The auto-send waiting to press Send in each chat window (by window), and how many pictures the box held
+    /// right after its paste. A newer paste into the window replaces it.
+    private var pendingSends: [CGWindowID: (token: Int, images: Int)] = [:]
     private var nextSendToken = 1
-    /// A session screenshot that arrived while another paste was under way: sent once that paste is done.
-    private var deferredAutoSend: (returnTo: NSRunningApplication?, multi: Bool, at: Date)?
+    /// A session screenshot that arrived while another paste was under way: pasted once that paste is done, if it
+    /// is still the screenshot waiting.
+    private var deferredAutoSend: (armedID: Int, returnTo: NSRunningApplication?, multi: Bool, at: Date)?
+    /// While an auto-paste of ours has the chat app in front (and just after), a screenshot still counts as taken
+    /// in the session it came from.
+    private var recentAutoPaste: (session: NSRunningApplication, chatPID: pid_t, until: Date)?
     private var launchObserver: NSObjectProtocol?
     /// The last moment a ScreenConnect session was the app in front (or its window was captured with the shortcut).
     private var sessionInFrontAt = Date.distantPast
@@ -201,9 +219,10 @@ final class ScreenshotPasteController {
         disarm("stopped")
         returnBorrowedClipboard()
         syncTriggers()
-        pendingSends.removeAll()
         deferredAutoSend = nil
-        releaseChatApps()
+        // A send already waiting (the last screenshot of a session, an answer still coming) finishes on its own;
+        // ChatGPT's flag goes off once nothing is waiting any more.
+        if pendingSends.isEmpty { releaseChatApps() }
     }
 
     /// False when the watched screenshot folder has gone away (renamed, deleted, unmounted) and must be found again.
@@ -338,17 +357,25 @@ final class ScreenshotPasteController {
     /// The screenshot that has just been armed was taken while the tech was in a ScreenConnect session, and a
     /// chat window is open on this desktop: paste it there and send it, without waiting for any trigger.
     private func sendIfTakenInSession(within memory: TimeInterval) {
-        guard armed != nil else { return }
-        let session = NSWorkspace.shared.frontmostApplication.flatMap { FrontmostAppGate.isScreenConnect($0) ? $0 : nil }
+        guard let armed else { return }
+        let front = NSWorkspace.shared.frontmostApplication
+        var session = front.flatMap { FrontmostAppGate.isScreenConnect($0) ? $0 : nil }
+        // An auto-paste of ours has the chat app in front for a moment: the tech is still in their session.
+        var viaOurPaste = false
+        if session == nil, let recent = recentAutoPaste, Date() < recent.until, !recent.session.isTerminated,
+           front?.processIdentifier == recent.chatPID {
+            session = recent.session
+            viaOurPaste = true
+        }
         let windowCapture = Date().timeIntervalSince(sessionCaptureAt) < 4
         let multi = multiCapture && windowCapture
         // Only a screenshot from a session that is still in front, or the session-window capture: a file that lands
         // seconds later, after the tech has moved on to another app, must not pull the chat app over it.
-        let auto = autoSendFromSession && Date().timeIntervalSince(sessionInFrontAt) < memory && (session != nil || windowCapture)
+        let auto = autoSendFromSession && (viaOurPaste || Date().timeIntervalSince(sessionInFrontAt) < memory) && (session != nil || windowCapture)
         guard multi || auto else { return }
         if pasting {
-            // Another paste is under way; this one goes once that is done.
-            deferredAutoSend = (session, multi, Date())
+            // Another paste is under way; this one goes once that is done (if it is still the one waiting).
+            deferredAutoSend = (armed.id, session, multi, Date())
             return
         }
         runSessionPaste(returnTo: session, multi: multi)
@@ -409,6 +436,7 @@ final class ScreenshotPasteController {
 
     private func disarm(_ why: String) {
         hoverTimer?.invalidate(); hoverTimer = nil
+        deferredAutoSend = nil
         guard armed != nil else { return }
         armed = nil
         state.armed = false
@@ -485,57 +513,72 @@ final class ScreenshotPasteController {
     }
 
     /// Sends what was pasted, as soon as it is safe, by pressing the app's own Send button (which works with the
-    /// app in the background). Safe means: the box still holds exactly what it held right after the paste (the tech
-    /// has not typed or removed anything), the app is not answering (no Stop button), the Send button is live,
-    /// and this is still the newest paste into the app. Checked again right before pressing; counted as sent only
-    /// when the box empties or an answer starts. Never presses Return blind. Returns whether it was sent.
-    private func send(in app: NSRunningApplication, composer: Composer, baseline: String, token: Int) async -> Bool {
+    /// app in the background). It stands down, leaving everything in the box for the tech, as soon as anything
+    /// suggests the message is no longer just the screenshot: text in the box, more pictures than were pasted, the
+    /// box replaced (another conversation), the tech working in the chat app, a newer paste into the window, or
+    /// auto-send switched off. Counted as sent only when an answer starts or the Send button goes away (an empty
+    /// box). Never presses Return. Returns whether it was sent.
+    private func send(in app: NSRunningApplication, window: CGWindowID, composer: Composer, baselineImages: Int,
+                      relocations: Int, handoff: Date, token: Int) async -> Bool {
         let name = PasteTarget.matching(app, in: targets)?.title ?? "the chat"
         let pid = app.processIdentifier
         let started = ContinuousClock.now
         func elapsed() -> Double { Double((ContinuousClock.now - started) / .milliseconds(1)) / 1000 }
         func ms() -> Int { Int(elapsed() * 1000) }
-        func stillOurs() -> Bool { pendingSends[pid] == token }
+        func stillOurs() -> Bool { pendingSends[window]?.token == token && autoSendFromSession && pasteEnabled }
         func finish(_ sent: Bool, _ why: String, toast: String?) -> Bool {
-            if stillOurs() { pendingSends[pid] = nil }
+            if pendingSends[window]?.token == token { pendingSends[window] = nil }
             SpeedyShared.log.notice("auto-send: \(why, privacy: .public) at \(ms()) ms")
-            if let toast { Toast.show(toast, seconds: sent ? 1.4 : 3.5) }
+            if let toast { Toast.show(toast, seconds: sent ? 1.4 : 4) }
+            if source == nil, pendingSends.isEmpty { releaseChatApps() }
             return sent
+        }
+        let notSent = "Screenshot pasted into \(name), not sent. Send it from \(name)"
+        // Since when the chat app has been in front, as last seen (the hand-off moment when the tech stayed there).
+        var chatFrontSince: Date? = NSWorkspace.shared.frontmostApplication?.processIdentifier == pid ? handoff : nil
+        func techWorkingInChat() -> Bool {
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { chatFrontSince = nil; return false }
+            let since = chatFrontSince ?? Date()
+            if chatFrontSince == nil { chatFrontSince = since }
+            // A key, click or drag in the chat app after it came forward (the keys that switched to it came before).
+            return Self.input(since: since.addingTimeInterval(0.25))
         }
         var lastProgress = 0.0          // reset while an answer is in progress
         var unreadableSince: Double?
         var presses = 0
         while true {
-            guard stillOurs() else { return finish(false, "superseded by a newer paste; left as it is", toast: nil) }
+            guard stillOurs() else {
+                return finish(false, autoSendFromSession && pasteEnabled ? "stood down: a newer paste into this window" : "stood down: auto-send switched off", toast: nil)
+            }
+            if techWorkingInChat() { return finish(false, "the tech is working in the chat app; left for them", toast: nil) }
             let s = await Task.detached { composer.read() }.value
             guard let typed = s.typed else {
                 // The box could not be read (the page re-drawing, the app busy): give it a moment before giving up.
                 if unreadableSince == nil { unreadableSince = elapsed() }
-                if elapsed() - (unreadableSince ?? 0) > 3 {
-                    return finish(false, "message box unreadable; not sent", toast: "Screenshot pasted into \(name). Press Return to send it")
-                }
+                if elapsed() - (unreadableSince ?? 0) > 3 { return finish(false, "message box unreadable; not sent", toast: notSent) }
                 try? await Task.sleep(for: .milliseconds(150))
                 continue
             }
             unreadableSince = nil
-            if typed != baseline {
-                // The tech has typed in the box: it is theirs to send now.
-                return finish(false, "the message box changed after the paste; left for the tech", toast: nil)
-            }
+            if !typed.isEmpty { return finish(false, "text in the box; left for the tech", toast: nil) }
+            if composer.relocations != relocations { return finish(false, "the message box was replaced (another chat?)", toast: notSent) }
+            if s.images > baselineImages { return finish(false, "more pictures or files in the box; left for the tech", toast: nil) }
             if s.streaming {
                 lastProgress = elapsed()
             } else if s.sendButton != nil, s.sendEnabled == true {
                 // Last look right before pressing: nothing may have changed in between.
                 let fresh = await Task.detached { composer.read() }.value
-                if stillOurs(), fresh.typed == baseline, !fresh.streaming, fresh.sendEnabled == true, let button = fresh.sendButton {
+                if stillOurs(), !techWorkingInChat(), fresh.typed == "", !fresh.streaming, fresh.sendEnabled == true,
+                   fresh.images <= baselineImages, composer.relocations == relocations, let button = fresh.sendButton {
                     presses += 1
-                    let accepted = ChatSend.press(SendButton(element: button))
-                    if await confirmSent(composer) {
+                    let accepted = await Task.detached { ChatSend.press(SendButton(element: button)) }.value
+                    if await confirmSent(composer, window: window, token: token) {
                         return finish(true, "sent (button)", toast: "Screenshot sent to \(name)")
                     }
+                    if !stillOurs() { continue }
                     SpeedyShared.log.notice("auto-send: press \(presses) not confirmed (accepted=\(accepted))")
                     if presses >= 2 {
-                        return finish(false, "Send pressed but not confirmed", toast: "Screenshot pasted into \(name). Press Return if it has not gone")
+                        return finish(false, "Send pressed but not confirmed", toast: "Screenshot pasted into \(name); it may not have sent. Check \(name)")
                     }
                     continue
                 }
@@ -543,46 +586,61 @@ final class ScreenshotPasteController {
             // Waiting for the upload to finish (Send disabled) or for an answer to end (Stop showing).
             if elapsed() - lastProgress > 15 || elapsed() > 120 {
                 SpeedyShared.log.notice("auto-send: composer buttons = [\(s.buttons.joined(separator: ", "), privacy: .public)]")
-                return finish(false, "the Send button never became ready", toast: "Screenshot pasted into \(name). Press Return to send it")
+                return finish(false, "the Send button never became ready", toast: notSent)
             }
             try? await Task.sleep(for: .milliseconds(150))
         }
     }
 
-    /// After a press: the box empties or an answer starts within a few seconds.
-    private func confirmSent(_ composer: Composer) async -> Bool {
+    /// After a press: an answer starts, or the Send button goes away (it is only there while the box holds
+    /// something), within a few seconds. Gives up at once when a newer paste has taken over.
+    private func confirmSent(_ composer: Composer, window: CGWindowID, token: Int) async -> Bool {
         for _ in 0..<20 {
             try? await Task.sleep(for: .milliseconds(150))
+            guard pendingSends[window]?.token == token else { return false }
             let s = await Task.detached { composer.read() }.value
             if s.streaming { return true }
-            // The box is back to empty and its Send button gone or off: the message (and the picture) went.
-            if let typed = s.typed, typed.isEmpty, s.sendEnabled != true { return true }
+            if s.typed == "", s.sendButton == nil { return true }
         }
         return false
     }
 
     /// No click, key press or scroll since then: the tech has not started doing something else.
     private static func techIdle(since: Date) -> Bool {
+        !input(since: since) && CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .scrollWheel) >= Date().timeIntervalSince(since)
+    }
+
+    /// A key, click or drag (hardware) since then.
+    private static func input(since: Date) -> Bool {
         let gone = Date().timeIntervalSince(since)
-        for type in [CGEventType.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel]
+        guard gone > 0 else { return false }
+        for type in [CGEventType.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .leftMouseDragged]
             where CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: type) < gone {
-            return false
+            return true
         }
-        return true
+        return false
     }
 
     /// Has ChatGPT build its accessibility tree ahead of time, so an auto-send can read its message box straight
-    /// away. Off the main thread, and it never brings the app forward. Only ChatGPT needs (and gets) this.
+    /// away. Never brings the app forward. Only ChatGPT needs (and gets) this, and only while auto-send is running.
     func primeChatApps() {
-        guard autoSendFromSession, targets.contains(.chatGPT) else { return }
-        let pids = NSWorkspace.shared.runningApplications.filter { PasteTarget.chatGPT.matches($0) }.map(\.processIdentifier)
-        guard !pids.isEmpty else { return }
-        DispatchQueue.global(qos: .utility).async { for pid in pids { ChatSend.wakeAccessibility(pid: pid) } }
+        guard autoSendFromSession, pasteEnabled, source != nil, targets.contains(.chatGPT) else { return }
+        for app in NSWorkspace.shared.runningApplications where PasteTarget.chatGPT.matches(app) {
+            ChatSend.wakeAccessibility(pid: app.processIdentifier)
+        }
     }
 
     /// Auto-send is off or Speedy Bot is stopping: ChatGPT no longer needs its tree kept up for us.
-    private func releaseChatApps() {
-        DispatchQueue.global(qos: .utility).async { ChatSend.releaseAccessibility() }
+    private func releaseChatApps() { ChatSend.releaseAccessibility() }
+
+    /// The paste in progress is finished (or abandoned): a session screenshot that came in meanwhile goes now.
+    private func donePasting() {
+        pasting = false
+        guard let deferred = deferredAutoSend else { return }
+        deferredAutoSend = nil
+        if armed?.id == deferred.armedID, Date().timeIntervalSince(deferred.at) < 15 {
+            runSessionPaste(returnTo: deferred.returnTo, multi: deferred.multi)
+        }
     }
 
     private func paste(into app: NSRunningApplication, window: WindowUnderPointer, armed: Armed, pointerMustStay: Bool,
@@ -600,8 +658,8 @@ final class ScreenshotPasteController {
                 expected = count
             case .file(let url):
                 guard let data = try? Data(contentsOf: url), !data.isEmpty else {
-                    self.pasting = false
                     if self.armed?.id == armed.id { self.disarm("screenshot file could not be read") }
+                    self.donePasting()
                     return
                 }
                 // If an earlier screenshot is still sitting on the clipboard from the paste before, what has to
@@ -623,32 +681,52 @@ final class ScreenshotPasteController {
                     SpeedyShared.log.notice("the clipboard could not be set aside; it now holds the screenshot")
                 }
             }
+            let name = PasteTarget.matching(app, in: self.targets)?.title ?? "the chat"
+            let windowID = window.windowID
 
-            // Auto-send must never send a message the tech has half written, so the message box of this very window
-            // is read first. Any typed text (whether or not an answer is in progress) means: paste only. A box that
-            // cannot be read within about 3 s (the tree still waking) also means paste only: nothing is sent blind.
+            // Auto-send must never send anything the tech has put in the box, so the message box of this very window
+            // is read first: any typed text, or pictures and files other than our own auto-send still waiting there,
+            // mean paste only. A box that cannot be read within 3 s (the tree still waking) also means paste only.
             var sendPlan: Composer?
             var notSentWhy = ""
             if thenSend {
-                let composer = Composer(pid: app.processIdentifier, windowID: window.windowID)
+                let composer = Composer(pid: app.processIdentifier, windowID: windowID)
+                let lookStarted = Date()
                 let before = await Task.detached { () -> ComposerState in
+                    let deadline = Date().addingTimeInterval(3)
                     var s = composer.read()
-                    var waited = 0
-                    while s.text == nil, waited < 12 {
+                    while s.text == nil, Date() < deadline {
                         try? await Task.sleep(for: .milliseconds(250))
-                        waited += 1
                         s = composer.read()
                     }
                     return s
                 }.value
+                let ours = self.pendingSends[windowID]   // an earlier auto-send still waiting in this window
                 if before.typed == nil {
                     notSentWhy = "unreadable"
                 } else if before.typed?.isEmpty == false {
                     notSentWhy = "draft"
+                } else if let ours, before.images <= ours.images {
+                    sendPlan = composer   // only our own pending screenshots are there: this one joins them
+                } else if before.images > 0 || (!before.streaming && before.sendButton != nil) {
+                    notSentWhy = "draft"  // pictures or files already in the box (a Send button means the box holds something)
                 } else {
                     sendPlan = composer
                 }
-                SpeedyShared.log.notice("auto-send: before the paste: \(sendPlan != nil ? "box clear" : notSentWhy, privacy: .public), streaming=\(before.streaming)")
+                SpeedyShared.log.notice("auto-send: before the paste: \(sendPlan != nil ? (ours != nil ? "joining the pending send" : "box clear") : notSentWhy, privacy: .public), streaming=\(before.streaming), pictures=\(before.images)")
+                // A slow look (the tree was still waking): only pull the chat app forward if the tech is still where
+                // the screenshot was taken and has not started anything else.
+                if Date().timeIntervalSince(lookStarted) > 0.6 {
+                    let stillThere = returnTo.map { NSWorkspace.shared.frontmostApplication?.processIdentifier == $0.processIdentifier } ?? true
+                    if !stillThere || Self.input(since: armed.at) {
+                        SpeedyShared.log.notice("auto-send: the tech moved on while the chat app was waking; left ready to paste")
+                        if let borrowToken { self.returnBorrowedClipboard(token: borrowToken) }
+                        Toast.show("Screenshot ready. Move to \(name) to paste it", seconds: 2.5)
+                        if self.armed?.id == armed.id { self.dwellTicks = 0; self.startHoverTimer() }
+                        self.donePasting()
+                        return
+                    }
+                }
             }
 
             // Only the current ChatGPT app is known to route a paste to its message box from anywhere in the
@@ -657,7 +735,6 @@ final class ScreenshotPasteController {
                 into: app, window: window, expectedChangeCount: expected,
                 refuseOtherTextFields: PasteTarget.matching(app, in: self.targets)?.refusesOtherTextFields ?? false,
                 stillOnTarget: { !pointerMustStay || WindowHitTest.windowUnder()?.windowID == window.windowID })
-            self.pasting = false
             SpeedyShared.log.notice("paste result: \(String(describing: result), privacy: .public)")
 
             if let borrowToken {
@@ -670,52 +747,73 @@ final class ScreenshotPasteController {
                 }
             }
 
+            // A paste by hand (hover, click, shortcut, multi-capture) into this window: whatever auto-send was
+            // waiting there stands down and the tech sends it all themselves.
+            if result == .pasted, !thenSend { self.pendingSends[windowID] = nil }
+
             // A newer screenshot arrived while this one was being pasted: it is the one that is armed now.
             guard self.armed?.id == armed.id else {
-                if self.armed != nil {
-                    self.dwellTicks = 0
-                    self.startHoverTimer()
-                    if let deferred = self.deferredAutoSend, Date().timeIntervalSince(deferred.at) < 15 {
-                        self.deferredAutoSend = nil
-                        self.runSessionPaste(returnTo: deferred.returnTo, multi: deferred.multi)
-                    }
+                if result == .pasted, thenSend {
+                    self.pendingSends[windowID] = nil
+                    Toast.show("Screenshot pasted into \(name), not sent: another one came in. Send them from \(name)", seconds: 3.5)
                 }
+                if self.armed != nil { self.dwellTicks = 0; self.startHoverTimer() }
+                self.donePasting()
                 return
             }
             let fromFile = { if case .file = armed.ref { return true } else { return false } }()
             switch result {
             case .pasted where thenSend:
                 self.disarm("pasted")
-                let pid = app.processIdentifier
-                let name = PasteTarget.matching(app, in: self.targets)?.title ?? "the chat"
                 guard let composer = sendPlan else {
                     // Left in the chat app for the tech to finish: no jump back, no send.
-                    self.pendingSends[pid] = nil
                     Toast.show(notSentWhy == "draft"
-                               ? "Screenshot pasted into \(name). You have a message in progress, so it was not sent"
-                               : "Screenshot pasted into \(name). Press Return to send it", seconds: 3.5)
+                               ? "Screenshot pasted into \(name). There is already a message in progress, so it was not sent"
+                               : "Screenshot pasted into \(name), not sent. Send it from \(name)", seconds: 4)
                     break
                 }
+                // An earlier auto-send waiting in this window stands down now; this one takes it all.
                 let token = self.nextSendToken
                 self.nextSendToken += 1
-                self.pendingSends[pid] = token   // any earlier auto-send into this app now stands down
+                self.pendingSends[windowID] = (token, self.pendingSends[windowID]?.images ?? 0)
+                if let returnTo {
+                    self.recentAutoPaste = (returnTo, app.processIdentifier, Date().addingTimeInterval(3))
+                }
                 let pastedAt = Date()
                 try? await Task.sleep(for: .milliseconds(350))
-                // What is typed in the box now (nothing, normally): anything different later is the tech's doing.
-                let baseline = await Task.detached { composer.read().typed }.value
-                // Back to the session (the send needs no focus), unless the tech has already started something else.
-                if let returnTo, Self.techIdle(since: pastedAt) { Paster.bringBack(returnTo) }
-                if let baseline {
-                    _ = await self.send(in: app, composer: composer, baseline: baseline, token: token)
-                } else {
-                    self.pendingSends[pid] = nil
-                    Toast.show("Screenshot pasted into \(name). Press Return to send it", seconds: 3.5)
+                // The box must still hold nothing typed: keys the tech typed while the chat app was coming forward
+                // land in its box, and those are not to be sent.
+                let after = await Task.detached { () -> ComposerState in
+                    var s = composer.read()
+                    var tries = 0
+                    while s.text == nil, tries < 6 {
+                        try? await Task.sleep(for: .milliseconds(150))
+                        tries += 1
+                        s = composer.read()
+                    }
+                    return s
+                }.value
+                guard after.typed == "" else {
+                    if self.pendingSends[windowID]?.token == token { self.pendingSends[windowID] = nil }
+                    SpeedyShared.log.notice("auto-send: after the paste the box holds \(after.typed == nil ? "something unreadable" : "typing", privacy: .public); not sent")
+                    Toast.show(after.typed == nil ? "Screenshot pasted into \(name), not sent. Send it from \(name)"
+                                                  : "Screenshot pasted into \(name), not sent: some typing went into the message box", seconds: 4)
+                    break
                 }
+                guard self.pendingSends[windowID]?.token == token else { break }   // a newer paste took over
+                self.pendingSends[windowID] = (token, after.images)
+                // Back to the session (the send needs no focus), unless the tech has already started something else.
+                var handoff = pastedAt
+                if let returnTo, Self.techIdle(since: pastedAt) {
+                    Paster.bringBack(returnTo)
+                    handoff = Date()
+                    self.recentAutoPaste = (returnTo, app.processIdentifier, Date().addingTimeInterval(1))
+                }
+                self.donePasting()
+                _ = await self.send(in: app, window: windowID, composer: composer, baselineImages: after.images,
+                                    relocations: composer.relocations, handoff: handoff, token: token)
             case .pasted:
                 self.disarm("pasted")
-                // More was added by hand (multi-capture, hover): a pending auto-send into this app stands down.
-                self.pendingSends[app.processIdentifier] = nil
-                let name = PasteTarget.matching(app, in: self.targets)?.title ?? "the chat"
                 if let returnTo {
                     // Multi-capture: give the MCP a moment to take the picture, then back to the session.
                     try? await Task.sleep(for: .milliseconds(350))
@@ -753,6 +851,7 @@ final class ScreenshotPasteController {
                 self.dwellTicks = 0
                 self.startHoverTimer()
             }
+            if self.pasting { self.donePasting() }
         }
     }
 }
