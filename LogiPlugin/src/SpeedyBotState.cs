@@ -125,7 +125,10 @@ namespace Loupedeck.SpeedyBotPlugin
         /// Asks Speedy Bot to do something: speedybot://toggle, enable, on, auto, off, multiping. `open -g` keeps
         /// whatever the tech is working in at the front, and starts Speedy Bot (quietly) if it is not running.
         /// </summary>
-        public void Send(String action)
+        public void Send(String action) => ThreadPool.QueueUserWorkItem(_ => this.SendNow(action));
+
+        /// <summary>Runs on a worker thread: a key press must never wait on `open`.</summary>
+        private void SendNow(String action)
         {
             try
             {

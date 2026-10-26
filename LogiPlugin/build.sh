@@ -48,4 +48,26 @@ PLUGINS="$HOME/Library/Application Support/Logi/LogiPluginService/Plugins"
 mkdir -p "$PLUGINS/SpeedyBot"
 rsync -a --delete "$STAGE/" "$PLUGINS/SpeedyBot/"
 echo "Installed: $PLUGINS/SpeedyBot"
-# RELOAD_STEP
+
+# The service only picks up a new or changed plugin when it starts. Quitting it is safe: Logi Options+ starts it
+# again straight away (the keypad goes blank for a few seconds).
+LOG="$HOME/Library/Application Support/Logi/LogiPluginService/Logs/plugin_logs/SpeedyBot.log"
+SERVICE_PROC="LogiPluginService.app/Contents/MacOS/LogiPluginService"
+MARK="$(date +%Y-%m-%dT%H-%M-%S)"
+if pgrep -f "$SERVICE_PROC" >/dev/null; then
+  echo "Restarting the Logi Plugin Service so it loads the plugin..."
+  osascript -e 'with timeout of 15 seconds' -e 'tell application id "com.logi.pluginservice" to quit' -e 'end timeout' >/dev/null 2>&1 || true
+  for _ in $(seq 1 60); do pgrep -f "$SERVICE_PROC" >/dev/null || break; sleep 0.25; done
+fi
+for _ in $(seq 1 12); do pgrep -f "$SERVICE_PROC" >/dev/null && break; sleep 0.5; done
+pgrep -f "$SERVICE_PROC" >/dev/null || open -g -b com.logi.pluginservice
+# Wait for this start's load line (log lines begin with a sortable time stamp).
+for _ in $(seq 1 40); do
+  if [ -f "$LOG" ] && awk -v m="$MARK" '$1 >= m && /Started loading plugin/' "$LOG" | grep -q .; then
+    echo "Loaded by the Logi Plugin Service. In Logi Options+: All Actions > Speedy Bot > drag \"Speedy Bot On/Off\" onto a key."
+    exit 0
+  fi
+  sleep 0.5
+done
+echo "The plugin is installed but the service has not reported loading it yet. Check: $LOG" >&2
+exit 1
