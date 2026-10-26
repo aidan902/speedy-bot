@@ -245,8 +245,8 @@ if CommandLine.arguments.contains("--probe-test") {
     exit(0)
 }
 
-// `--dump-chat`: wake the chat apps' accessibility trees the way auto-send does (never activating them) and show
-// what the Send-button finder sees (needs the Accessibility grant).
+// `--dump-chat`: wake ChatGPT the way auto-send does (never activating it) and show what auto-send reads in each
+// chat app's front window: the message box (its length, never its text) and the composer's buttons.
 if CommandLine.arguments.contains("--dump-chat") {
     _ = NSApplication.shared
     let ids = ["anthropic", "openai", "chatgpt", "codex", "grok", "xai", ".x.grok"]
@@ -258,14 +258,17 @@ if CommandLine.arguments.contains("--dump-chat") {
     for app in apps {
         let pid = app.processIdentifier
         print("== \(app.localizedName ?? "?") [\(app.bundleIdentifier ?? "?")] awake=\(ChatSend.isAwake(pid: pid))")
-        ChatSend.wakeAccessibility(pid: pid)
-        for i in 1...8 where !ChatSend.isAwake(pid: pid) {
-            Thread.sleep(forTimeInterval: 0.5)
-            print("   t+\(Double(i) * 0.5)s awake=\(ChatSend.isAwake(pid: pid)) front=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")")
+        if PasteTarget.chatGPT.matches(app) {
+            ChatSend.wakeAccessibility(pid: pid)
+            for i in 1...8 where !ChatSend.isAwake(pid: pid) {
+                Thread.sleep(forTimeInterval: 0.5)
+                print("   t+\(Double(i) * 0.5)s awake=\(ChatSend.isAwake(pid: pid)) front=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")")
+            }
         }
-        let scan = ChatSend.scanComposer(pid: pid)
-        print("   tree=\(scan.hasTree) streaming=\(scan.streaming) send=\(scan.sendEnabled.map { $0 ? "enabled" : "disabled" } ?? "none") front=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")")
-        print("   buttons: \(scan.inventory.suffix(8).joined(separator: ", "))")
+        guard let window = WindowHitTest.frontWindow(ofPID: pid) else { print("   no window on screen"); continue }
+        let state = Composer(pid: pid, windowID: window.windowID).read()
+        print("   window \(window.windowID): box=\(state.text == nil ? "unreadable" : "\(state.text!.count) chars, typed \(state.typed?.count ?? 0)") streaming=\(state.streaming) send=\(state.sendEnabled.map { $0 ? "enabled" : "disabled" } ?? "none")")
+        print("   composer buttons: \(state.buttons.joined(separator: ", "))")
     }
     exit(0)
 }

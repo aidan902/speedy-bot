@@ -198,32 +198,6 @@ public enum Paster {
         return .pasted
     }
 
-    /// The chat app is still in front, no modifier is held, and the tech has not touched the keyboard since the paste.
-    public static func stillSafeToSend(in app: NSRunningApplication, pastedAt: ContinuousClock.Instant) async -> Bool {
-        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier,
-              !TextTyper.physicalModifiersDown() else { return false }
-        let sincePaste = Double((ContinuousClock.now - pastedAt) / .milliseconds(1)) / 1000
-        return CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .keyDown) > sincePaste
-    }
-
-    /// Presses Return in the app a screenshot was just pasted into, to send it. Only if that app is still in
-    /// front, no modifier is held, and the tech has not touched the keyboard since the paste (so a message they
-    /// have started typing is never sent for them).
-    public static func pressReturn(in app: NSRunningApplication, after delay: Duration, pastedAt: ContinuousClock.Instant) async -> Bool {
-        try? await Task.sleep(for: delay)
-        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier,
-              !TextTyper.physicalModifiersDown() else { return false }
-        let sincePaste = Double((ContinuousClock.now - pastedAt) / .milliseconds(1)) / 1000
-        guard CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .keyDown) > sincePaste else { return false }
-        let src = TextTyper.makeSource()
-        let down = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_Return), keyDown: true)
-        let up = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_Return), keyDown: false)
-        down?.flags = []; up?.flags = []
-        down?.post(tap: .cgSessionEventTap)
-        up?.post(tap: .cgSessionEventTap)
-        return true
-    }
-
     private static func ms(since start: ContinuousClock.Instant) -> Int {
         Int((ContinuousClock.now - start) / .milliseconds(1))
     }
