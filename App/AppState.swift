@@ -316,6 +316,7 @@ final class AppState: ObservableObject {
         screenshot.multiCapture = multiCapture
         screenshot.shortcut = pasteShortcut
         screenshot.pasteEnabled = screenshotPaste
+        if !masterEnabled { screenshot.cancelPendingSends() }   // Off means nothing waiting goes out either
         // Resting the pointer pastes a fresh screenshot; an old one then needs a double-click (if the tech wants that).
         screenshot.hoverMaxAge = staleDoubleClick ? TimeInterval(min(max(staleAfterSeconds, 1), 1800)) : nil
         screenshotNote = nil

@@ -29,8 +29,12 @@ public struct ComposerState: @unchecked Sendable {
     public let emptyTexts: [String]
     /// Pictures shown in the composer (thumbnails of attached screenshots or files).
     public let images: Int
+    /// Buttons in the composer other than its own fixed ones (Send, Stop, attach, dictate, voice): attachment
+    /// chips bring their own (remove, open). Compared against the count right after a paste, a rise means
+    /// something was added to the message.
+    public let extras: Int
 
-    static let unreadable = ComposerState(text: nil, sendButton: nil, sendEnabled: nil, streaming: false, buttons: [], emptyTexts: [], images: 0)
+    static let unreadable = ComposerState(text: nil, sendButton: nil, sendEnabled: nil, streaming: false, buttons: [], emptyTexts: [], images: 0, extras: 0)
 
     /// What the tech has typed: the text without pasted pictures (U+FFFC) and white space, and "" when the box
     /// only shows its placeholder. nil when unreadable.
@@ -48,6 +52,8 @@ public enum ChatSend {
     /// Exact Stop-button labels shown while the app is answering.
     static let stopLabels: Set<String> = ["stop", "stop streaming", "stop generating", "stop response",
                                           "stop generating response", "stop request", "stop reply"]
+    /// The composer's own fixed buttons (measured on ChatGPT), which are not part of a message.
+    static let fixedLabels: Set<String> = ["add files and more", "dictate", "start voice chat", "voice mode", "use voice mode"]
     static let timeout: Float = 0.25
 
     static func attr(_ e: AXUIElement, _ name: String) -> AnyObject? {
@@ -243,6 +249,7 @@ public final class Composer: @unchecked Sendable {
             var streaming = false
             var buttons: [String] = []
             var images = 0
+            var extras = 0
             while !queue.isEmpty, visited < 800 {
                 let e = queue.removeFirst()
                 visited += 1
@@ -253,13 +260,14 @@ public final class Composer: @unchecked Sendable {
                     let l = ChatSend.label(of: e)
                     if ChatSend.sendLabels.contains(l) { send = e }
                     if ChatSend.stopLabels.contains(l) { streaming = true }
-                    if !l.isEmpty { buttons.append("\(l)\((ChatSend.attr(e, kAXEnabledAttribute) as? Bool) == true ? "✓" : "✗")") }
+                    if !ChatSend.sendLabels.contains(l), !ChatSend.stopLabels.contains(l), !ChatSend.fixedLabels.contains(l) { extras += 1 }
+                    buttons.append("\(l.isEmpty ? "(no label)" : l)\((ChatSend.attr(e, kAXEnabledAttribute) as? Bool) == true ? "✓" : "✗")")
                 }
                 if let kids = ChatSend.attr(e, kAXChildrenAttribute) as? [AXUIElement] { queue.append(contentsOf: kids) }
             }
             let enabled = send.flatMap { ChatSend.attr($0, kAXEnabledAttribute) as? Bool }
             return ComposerState(text: text, sendButton: send, sendEnabled: enabled, streaming: streaming, buttons: buttons,
-                                 emptyTexts: emptyTexts, images: images)
+                                 emptyTexts: emptyTexts, images: images, extras: extras)
         }
         return .unreadable
     }
