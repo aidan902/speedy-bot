@@ -62,6 +62,17 @@ public enum WindowHitTest {
         return raw.contains { ($0[kCGWindowOwnerName as String] as? String) == "screencaptureui" }
     }
 
+    /// This window of a process, if it is on screen.
+    public static func window(id: CGWindowID, ofPID pid: pid_t) -> WindowUnderPointer? {
+        guard let raw = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
+        for d in raw {
+            guard (d[kCGWindowNumber as String] as? CGWindowID) == id, (d[kCGWindowOwnerPID as String] as? pid_t) == pid,
+                  let bd = d[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: bd) else { continue }
+            return WindowUnderPointer(windowID: id, ownerPID: pid, ownerName: d[kCGWindowOwnerName as String] as? String ?? "", bounds: r)
+        }
+        return nil
+    }
+
     /// The frontmost ordinary window of a process, wherever the pointer is.
     public static func frontWindow(ofPID pid: pid_t) -> WindowUnderPointer? {
         guard let raw = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }

@@ -188,7 +188,17 @@ struct MainView: View {
                         Text(target.title).lineLimit(1).fixedSize()
                     }
                 }
+                .disabled(state.autoMCP)
                 Spacer(minLength: 0)
+            }
+            HStack(spacing: 8) {
+                RoundToggle(symbol: "checkmark", label: "Auto MCP", isOn: $state.autoMCP, size: 22, emptyWhenOff: true)
+                Text("Auto MCP: paste into the chat app the pointer was last in").lineLimit(1).minimumScaleFactor(0.85)
+                Spacer(minLength: 0)
+            }
+            if state.autoMCP {
+                Text("ChatGPT, Claude and Grok all count: a screenshot goes to whichever of them the pointer was last over.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             HStack {
                 Text("Paste when")

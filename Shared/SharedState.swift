@@ -23,6 +23,8 @@ enum SpeedyShared {
     static let pasteTargetsKey = "pasteTargets"
     /// A screenshot taken while in a ScreenConnect session is pasted into the chat and sent, with no trigger.
     static let autoSendFromSessionKey = "autoSendFromSession"
+    /// Auto MCP: a screenshot goes to whichever chat app (ChatGPT, Claude, Grok) the pointer was last over.
+    static let autoMCPKey = "autoMCP"
     /// Window captures go into the MCP's message box without being sent, so several can be gathered.
     static let multiCaptureKey = "multiCapture"
     /// The first-run setup window has been dismissed.
@@ -78,6 +80,10 @@ enum SpeedyShared {
     static let keyCaptureNotification = groupID + ".key.capture"
     static let keyPasteNotification = groupID + ".key.paste"
     static let keyPasteSendNotification = groupID + ".key.pastesend"
+    /// Keypad setting keys: auto-send on/off, Auto MCP on/off, and the incident (ticket) number popup.
+    static let keyAutoSendNotification = groupID + ".key.autosend"
+    static let keyAutoMCPNotification = groupID + ".key.automcp"
+    static let keyTicketNotification = groupID + ".key.ticket"
     /// Kind string of the Control Center control.
     static let controlKind = "net.fm.speedybot.toggle"
 

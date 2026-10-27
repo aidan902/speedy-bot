@@ -10,7 +10,7 @@
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
-    <Version>0.7.3</Version>
+    <Version>0.7.4</Version>
     <PluginApiPath Condition="'$(PluginApiPath)' == ''">/Applications/Utilities/LogiPluginService.app/Contents/MonoBundle/PluginApi.dll</PluginApiPath>
   </PropertyGroup>
   <ItemGroup>

@@ -39,4 +39,7 @@ APP="$OUT/Build/Products/Release/Speedy Bot.app"
 [ -d "$APP" ] || { echo "Build failed." >&2; exit 1; }
 codesign --verify --strict "$APP"
 "$APP/Contents/MacOS/Speedy Bot" --selftest
+# macOS registers every app it sees for speedybot:// links; a build-folder copy catching a keypad link would start
+# next to (and take over from) the installed one. Only the installed copy should answer.
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$APP" 2>/dev/null || true
 echo "Built: $APP"

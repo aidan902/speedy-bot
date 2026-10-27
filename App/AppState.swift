@@ -80,6 +80,9 @@ final class AppState: ObservableObject {
     @Published private(set) var captureShortcut: HotKeySpec?
     /// A screenshot taken while in a ScreenConnect session is pasted into the chat and sent straight away.
     @Published var autoSendFromSession: Bool { didSet { changed(SpeedyShared.autoSendFromSessionKey, autoSendFromSession) } }
+    /// Auto MCP: a screenshot goes to whichever chat app (ChatGPT, Claude, Grok) the pointer was last over, instead
+    /// of only the ticked ones.
+    @Published var autoMCP: Bool { didSet { changed(SpeedyShared.autoMCPKey, autoMCP) } }
     /// Window captures (⇧⌘2) go straight into the MCP's message box, not sent, so several can go in one message.
     @Published var multiCapture: Bool { didSet { changed(SpeedyShared.multiCaptureKey, multiCapture) } }
     /// The chat apps a screenshot may be pasted into. Always at least one.
@@ -143,6 +146,7 @@ final class AppState: ObservableObject {
         pasteShortcut = HotKeySpec.load(.paste)
         autoSendFromSession = SpeedyShared.bool(SpeedyShared.autoSendFromSessionKey, default: false)
         multiCapture = SpeedyShared.bool(SpeedyShared.multiCaptureKey, default: false)
+        autoMCP = SpeedyShared.bool(SpeedyShared.autoMCPKey, default: false)
         let storedTargets = (SpeedyShared.defaults.stringArray(forKey: SpeedyShared.pasteTargetsKey) ?? []).compactMap(PasteTarget.init(rawValue:))
         pasteTargets = storedTargets.isEmpty ? [.chatGPT] : Set(storedTargets)
         typingShortcut = HotKeySpec.load(.typing).flatMap { $0.leavesBareModifierTapOnRemote ? nil : $0 }
@@ -268,10 +272,28 @@ final class AppState: ObservableObject {
     }
 
     /// The keypad's action keys (Logitech plugin, via local Darwin notifications).
-    enum KeyAction: String { case type, capture, paste, pasteSend }
+    enum KeyAction: String { case type, capture, paste, pasteSend, autoSend, autoMCP, ticket }
 
     func keyAction(_ action: KeyAction) {
         SpeedyShared.log.notice("keypad: \(action.rawValue, privacy: .public)")
+        // The setting keys work whatever the mode.
+        switch action {
+        case .autoSend:
+            autoSendFromSession.toggle()
+            Toast.show(autoSendFromSession ? "Auto-send is on" : "Auto-send is off", seconds: 1.6)
+            return
+        case .autoMCP:
+            autoMCP.toggle()
+            Toast.show(autoMCP ? "Auto MCP on: screenshots go to the chat app the pointer was last over"
+                               : "Auto MCP off: screenshots go to \(pasteTargetNames)", seconds: 2.2)
+            return
+        case .ticket:
+            // After this notification has been handled: the popup runs its own loop until it is answered.
+            DispatchQueue.main.async { MainActor.assumeIsolated { self.askForIncident() } }
+            return
+        default:
+            break
+        }
         let pasteKey = action == .paste || action == .pasteSend
         // In Auto, just after a session closes, its last screenshot can still be pasted from the keypad.
         guard active || (pasteKey && lingering && screenshot.hasShotFromSession(closedAt: sessionClosedAt)) else {
@@ -285,6 +307,8 @@ final class AppState: ObservableObject {
         case .capture:
             screenshot.cancelKeyIntent("another key")
             capture.captureFromKey()
+        case .autoSend, .autoMCP, .ticket:
+            break
         case .paste, .pasteSend:
             screenshot.pasteFromKey(send: action == .pasteSend, canCapture: active && screenConnectOpen,
                                     captureInFlight: capture.capturing) { [weak self] in
@@ -319,6 +343,10 @@ final class AppState: ObservableObject {
             "pid": Int(ProcessInfo.processInfo.processIdentifier),
             "version": Updater.currentVersion,
             "updatedAt": Int(Date().timeIntervalSince1970),
+            // For the keypad's setting keys: auto-send, Auto MCP, and the ticket number.
+            "autoSend": autoSendFromSession,
+            "autoMCP": autoMCP,
+            "incident": incident,
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: info, options: [.sortedKeys]) else { return }
         let url = Self.stateFileURL
@@ -330,6 +358,7 @@ final class AppState: ObservableObject {
         guard !reloading else { return }
         SpeedyShared.defaults.set(value, forKey: key)
         apply()
+        publishState()
         if key == SpeedyShared.saveScreenshotsKey, value, incident.isEmpty {
             // Ask which incident the screenshots belong to, once the switch has finished flipping.
             DispatchQueue.main.async { MainActor.assumeIsolated { self.askForIncident() } }
@@ -338,7 +367,8 @@ final class AppState: ObservableObject {
 
     private func apply() {
         screenshot.trigger = pasteTrigger
-        screenshot.targets = pasteTargets
+        screenshot.targets = autoMCP ? Set(PasteTarget.allCases) : pasteTargets
+        screenshot.autoMCP = autoMCP
         screenshot.autoSendFromSession = autoSendFromSession
         screenshot.multiCapture = multiCapture
         screenshot.shortcut = pasteShortcut
@@ -443,6 +473,7 @@ final class AppState: ObservableObject {
         guard value != incident else { return }
         incident = value
         SpeedyShared.defaults.set(value, forKey: SpeedyShared.incidentKey)
+        publishState()
     }
 
     func askForIncident() {

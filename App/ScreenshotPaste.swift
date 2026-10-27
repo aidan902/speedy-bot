@@ -121,6 +121,11 @@ final class ScreenshotPasteController {
     var trigger = PasteTrigger.hover { didSet { syncTriggers() } }
     /// Which chat apps count. Always at least one.
     var targets: Set<PasteTarget> = [.chatGPT] { didSet { if targets != oldValue { releaseIfIdle(); primeChatApps() } } }
+    /// Auto MCP: the chat window the pointer was last over is where a screenshot goes (when the pointer is not on one).
+    var autoMCP = false
+    /// The chat window the pointer was last over (for at least a moment), and the one it is over now.
+    private var lastChat: (pid: pid_t, windowID: CGWindowID)?
+    private var pointerChat: (windowID: CGWindowID, since: Date)?
     /// The key combination for `PasteTrigger.shortcut`.
     var shortcut: HotKeySpec? { didSet { if shortcut != oldValue { hotKey?.unregister(); hotKey = nil; syncTriggers() } } }
     /// In the pointer-rest mode: a screenshot that has been waiting longer than this does not paste by itself any
@@ -313,7 +318,19 @@ final class ScreenshotPasteController {
             syncTriggers()
         }
         guard pasteEnabled, armed == nil else { return }   // while armed the hover timer keeps this up to date
-        if targetUnderPointer() == nil { lastSeenOffChatGPT = Date() }
+        let target = targetUnderPointer()
+        notePointerChat(target)
+        if target == nil { lastSeenOffChatGPT = Date() }
+    }
+
+    /// Remembers the chat window the pointer rests on (a fifth of a second or more: not one it only crosses).
+    private func notePointerChat(_ target: (app: NSRunningApplication, window: WindowUnderPointer)?) {
+        guard let target else { pointerChat = nil; return }
+        guard let current = pointerChat, current.windowID == target.window.windowID else {
+            pointerChat = (target.window.windowID, Date())
+            return
+        }
+        if Date().timeIntervalSince(current.since) >= 0.2 { lastChat = (target.app.processIdentifier, target.window.windowID) }
     }
 
     // MARK: triggers
@@ -377,6 +394,12 @@ final class ScreenshotPasteController {
     /// The chat window under the pointer, else the frontmost window of whichever chosen chat app is open.
     private func shortcutTarget() -> (app: NSRunningApplication, window: WindowUnderPointer)? {
         if let target = targetUnderPointer() { return target }
+        // Auto MCP: the chat window the pointer was last over, while it is still open.
+        if autoMCP, let last = lastChat, let app = NSRunningApplication(processIdentifier: last.pid), !app.isTerminated,
+           PasteTarget.matching(app, in: targets) != nil,
+           let window = WindowHitTest.window(id: last.windowID, ofPID: last.pid) ?? WindowHitTest.frontWindow(ofPID: last.pid) {
+            return (app, window)
+        }
         let apps = NSWorkspace.shared.runningApplications.filter { PasteTarget.matching($0, in: targets) != nil }
         // The one in front first, if one of them is.
         let ordered = apps.sorted { a, _ in a.isActive }
@@ -700,7 +723,9 @@ final class ScreenshotPasteController {
 
         // Keep track of where the pointer has been whatever the trigger is: the next screenshot needs to know.
         let point = WindowHitTest.pointer()
-        guard let target = targetUnderPointer(point) else {
+        let underPointer = targetUnderPointer(point)
+        notePointerChat(underPointer)
+        guard let target = underPointer else {
             sawPointerElsewhere = true
             lastSeenOffChatGPT = Date()
             dwellTicks = 0

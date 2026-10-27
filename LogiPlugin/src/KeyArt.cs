@@ -11,6 +11,12 @@ namespace Loupedeck.SpeedyBotPlugin
         public static readonly BitmapColor Blue = new BitmapColor(0x3D, 0x9B, 0xFF);
         public static readonly BitmapColor Grey = new BitmapColor(0x8E, 0x8E, 0x93);
         public static readonly BitmapColor White = new BitmapColor(0xF2, 0xF2, 0xF7);
+        public static readonly BitmapColor Red = new BitmapColor(0xFF, 0x45, 0x3A);
+        public static readonly BitmapColor Orange = new BitmapColor(0xFF, 0x9F, 0x0A);
+        public static readonly BitmapColor Purple = new BitmapColor(0xBF, 0x5A, 0xF2);
+
+        /// <summary>The same colour, faded: a key that is not the current state.</summary>
+        public static BitmapColor Muted(BitmapColor c) => new BitmapColor(c, 120);
 
         private static BitmapImage _icon;
 
@@ -44,7 +50,8 @@ namespace Loupedeck.SpeedyBotPlugin
             {
                 b.FillRectangle(x, y, iconSize, iconSize, new BitmapColor(Background, 165));
             }
-            var fontSize = Math.Max(9, (Int32)(h * 0.17));
+            // Longer words ("AUTO SEND") get a slightly smaller font so they stay on one line.
+            var fontSize = Math.Max(9, Math.Min((Int32)(h * 0.17), (Int32)(w * 0.95 / (0.64 * Math.Max(1, word.Length)))));
             var textTop = y + iconSize + (Int32)(h * 0.03);
             b.DrawText(word, 0, textTop, w, h - textTop, wordColor, fontSize, fontSize, BitmapBuilder.GetDefaultSpaceHeight(size), null);
             return b.ToImage();
@@ -54,9 +61,9 @@ namespace Loupedeck.SpeedyBotPlugin
         public static BitmapImage ForToggle(PluginImageSize size, SpeedyMode mode) => mode switch
         {
             SpeedyMode.On => Draw(size, "ON", Green, false),
-            SpeedyMode.AutoActive => Draw(size, "AUTO", Green, false),
-            SpeedyMode.AutoWaiting => Draw(size, "AUTO", Blue, false),
-            SpeedyMode.Off => Draw(size, "OFF", Grey, true),
+            SpeedyMode.AutoActive => Draw(size, "AUTO", Orange, false),
+            SpeedyMode.AutoWaiting => Draw(size, "AUTO", Orange, true),
+            SpeedyMode.Off => Draw(size, "OFF", Red, true),
             _ => Draw(size, "START", Grey, true),
         };
     }

@@ -55,9 +55,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .filter { $0.processIdentifier != me.processIdentifier }
         for twin in twins {
             let samePlace = twin.bundleURL?.standardizedFileURL == Bundle.main.bundleURL.standardizedFileURL
-            // Two copies started at the same moment: the later one takes over, the earlier one carries on.
-            let twinIsNewer = (twin.launchDate ?? .distantPast) > (me.launchDate ?? Date())
+            // Two copies started at the same moment: the later one takes over, the earlier one carries on (the
+            // process number breaks a tie, so exactly one of the two acts).
+            let twinLaunch = twin.launchDate ?? .distantPast, myLaunch = me.launchDate ?? Date()
+            let twinIsNewer = twinLaunch > myLaunch || (twinLaunch == myLaunch && twin.processIdentifier > me.processIdentifier)
             if samePlace {
+                // Opened again from the same place: the copy already running shows its window, and this one goes.
+                // When both started together, only the newer one goes (each would otherwise quit for the other).
+                if twinIsNewer { continue }
                 isSecondCopy = true
                 SpeedyShared.post(SpeedyShared.showWindowNotification)
                 NSApp.terminate(nil)
@@ -89,7 +94,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ]
         // The keypad's action keys act only with a fresh press file from the plugin (see KeypadPress).
         let keys: [(String, AppState.KeyAction)] = [(SpeedyShared.keyTypeNotification, .type), (SpeedyShared.keyCaptureNotification, .capture),
-                                                     (SpeedyShared.keyPasteNotification, .paste), (SpeedyShared.keyPasteSendNotification, .pasteSend)]
+                                                     (SpeedyShared.keyPasteNotification, .paste), (SpeedyShared.keyPasteSendNotification, .pasteSend),
+                                                     (SpeedyShared.keyAutoSendNotification, .autoSend), (SpeedyShared.keyAutoMCPNotification, .autoMCP),
+                                                     (SpeedyShared.keyTicketNotification, .ticket)]
         for (name, action) in keys {
             observers.append(DarwinObserver(name: name) { [weak self] in
                 let key = action.rawValue.lowercased()

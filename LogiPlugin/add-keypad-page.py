@@ -16,9 +16,10 @@
 Several of these can go in one run (for example --migrate --speedybot); the service is restarted once. Anything
 else on the command line (a misspelled option, say) stops the script before it changes anything.
 
-Keys, row by row: On | Off | Auto (the current mode's key lights up); Type the clipboard (like ⌘⇧V) | empty |
-Capture the session window (like ⇧⌘2); Paste, no send | empty | Paste and send. Needs the Speedy Bot plugin installed
-(LogiPlugin/build.sh). The keypad is device Loupedeck70.
+Keys, row by row: On | Off | Auto (the current mode's key lights up: green, red, orange); Auto-send on/off | Type
+the clipboard into the session (like ⌘⇧V, purple) | Ticket (the incident number); Capture the session window (like
+⇧⌘2) | empty | Auto MCP on/off. Needs the Speedy Bot plugin installed (LogiPlugin/build.sh). The keypad is device
+Loupedeck70.
 
 The ScreenConnect profile is written the way the plugin service's own CreateNewApplicationProfile makes one for an
 app without a Logitech plugin: folder = the bundle id in lower case, no native plugin, processOrBundleName = the
@@ -37,10 +38,10 @@ SC_DIR = os.path.join(DEVICE_DIR, SC_BUNDLE.lower())
 SB_BUNDLE = "net.fm.speedybot"
 P = "$SpeedyBot___Loupedeck.SpeedyBotPlugin."
 # Plain commands only: Logi Options+ shows a warning sign instead of the picture of a parameterized command.
-# The page, row by row:  On | Off | Auto  /  Type (⌘⇧V) | - | Capture (⇧⌘2)  /  Paste, no send | - | Paste and send
+# The page, row by row:  On | Off | Auto  /  Auto send | Type (⌘⇧V) | Ticket  /  Capture (⇧⌘2) | - | Auto MCP
 KEYS = [P + "OnCommand", P + "OffCommand", P + "AutoCommand",
-        P + "TypeCommand", None, P + "CaptureCommand",
-        P + "PasteCommand", None, P + "PasteSendCommand"]
+        P + "AutoSendCommand", P + "TypeCommand", P + "TicketCommand",
+        P + "CaptureCommand", None, P + "AutoMcpCommand"]
 # Keys made by 0.7.1 (one parameterized command) -> the plain commands that replace it.
 MIGRATE = {P + "ModeCommand___on": P + "OnCommand", P + "ModeCommand___auto": P + "AutoCommand",
            P + "ModeCommand___off": P + "OffCommand", P + "ModeCommand___multiping": P + "MultiPingCommand"}

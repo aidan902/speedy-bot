@@ -27,6 +27,15 @@ namespace Loupedeck.SpeedyBotPlugin
         /// <summary>The app's own mode name ("on", "auto", "off"), or null when it is not running.</summary>
         public String RawMode { get; private set; }
 
+        /// <summary>Auto-send (screenshots taken in a session go into the chat app and are sent) is switched on.</summary>
+        public Boolean AutoSend { get; private set; }
+
+        /// <summary>Auto MCP: screenshots go to whichever chat app the pointer was last over.</summary>
+        public Boolean AutoMcp { get; private set; }
+
+        /// <summary>The incident number screenshots are filed under ("#INC - 12,345"), or "" when none is set.</summary>
+        public String Incident { get; private set; } = "";
+
         private readonly String _stateFile = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             "Library", "Application Support", "Speedy Bot", "state.json");
@@ -57,13 +66,17 @@ namespace Loupedeck.SpeedyBotPlugin
         /// <summary>Reads the state file now. Cheap: a few hundred bytes.</summary>
         public void Refresh()
         {
-            var (mode, raw) = this.Read();
+            var (mode, raw, settings) = this.Read();
             Boolean changed;
             lock (this._lock)
             {
-                changed = mode != this.Mode || raw != this.RawMode;
+                changed = mode != this.Mode || raw != this.RawMode || settings.AutoSend != this.AutoSend
+                    || settings.AutoMcp != this.AutoMcp || settings.Incident != this.Incident;
                 this.Mode = mode;
                 this.RawMode = raw;
+                this.AutoSend = settings.AutoSend;
+                this.AutoMcp = settings.AutoMcp;
+                this.Incident = settings.Incident;
             }
             // The first look after the log is available is always written: build.sh waits for this line to know
             // the plugin really runs (the service logs "Started loading" before it knows whether loading worked).
@@ -79,35 +92,39 @@ namespace Loupedeck.SpeedyBotPlugin
             }
         }
 
-        private (SpeedyMode, String) Read()
+        private (SpeedyMode, String, (Boolean AutoSend, Boolean AutoMcp, String Incident)) Read()
         {
             try
             {
                 if (!File.Exists(this._stateFile))
                 {
-                    return (SpeedyMode.NotRunning, null);
+                    return (SpeedyMode.NotRunning, null, (false, false, ""));
                 }
                 using var doc = JsonDocument.Parse(File.ReadAllText(this._stateFile));
                 var root = doc.RootElement;
                 var running = root.TryGetProperty("running", out var r) && r.ValueKind == JsonValueKind.True;
                 var pid = root.TryGetProperty("pid", out var p) && p.TryGetInt32(out var n) ? n : 0;
+                var settings = (
+                    root.TryGetProperty("autoSend", out var s) && s.ValueKind == JsonValueKind.True,
+                    root.TryGetProperty("autoMCP", out var c) && c.ValueKind == JsonValueKind.True,
+                    root.TryGetProperty("incident", out var i) && i.ValueKind == JsonValueKind.String ? i.GetString() ?? "" : "");
                 if (!running || !IsSpeedyBot(pid))
                 {
-                    return (SpeedyMode.NotRunning, null);
+                    return (SpeedyMode.NotRunning, null, settings);
                 }
                 var mode = root.TryGetProperty("mode", out var m) ? m.GetString() : null;
                 var active = root.TryGetProperty("active", out var a) && a.ValueKind == JsonValueKind.True;
                 return mode switch
                 {
-                    "on" => (SpeedyMode.On, mode),
-                    "auto" => (active ? SpeedyMode.AutoActive : SpeedyMode.AutoWaiting, mode),
-                    _ => (SpeedyMode.Off, mode ?? "off"),
+                    "on" => (SpeedyMode.On, mode, settings),
+                    "auto" => (active ? SpeedyMode.AutoActive : SpeedyMode.AutoWaiting, mode, settings),
+                    _ => (SpeedyMode.Off, mode ?? "off", settings),
                 };
             }
             catch (Exception)
             {
                 // Read while the app was replacing the file, or a file from another version: keep what is shown.
-                lock (this._lock) { return (this.Mode, this.RawMode); }
+                lock (this._lock) { return (this.Mode, this.RawMode, (this.AutoSend, this.AutoMcp, this.Incident)); }
             }
         }
 

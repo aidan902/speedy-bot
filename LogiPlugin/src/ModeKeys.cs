@@ -15,9 +15,11 @@ namespace Loupedeck.SpeedyBotPlugin
             var current = state.RawMode == mode;
             return mode switch
             {
-                "on" => KeyArt.Draw(size, "ON", current ? KeyArt.Green : KeyArt.Grey, !current),
-                "auto" => KeyArt.Draw(size, "AUTO", current ? (state.Mode == SpeedyMode.AutoActive ? KeyArt.Green : KeyArt.Blue) : KeyArt.Grey, !current),
-                "off" => KeyArt.Draw(size, "OFF", KeyArt.Grey, !current),
+                // Each mode in its own colour (On green, Auto orange, Off red), full strength on the current mode's
+                // key, faded on the others. Auto waiting for a session: orange with the icon dimmed.
+                "on" => KeyArt.Draw(size, "ON", current ? KeyArt.Green : KeyArt.Muted(KeyArt.Green), !current),
+                "auto" => KeyArt.Draw(size, "AUTO", current ? KeyArt.Orange : KeyArt.Muted(KeyArt.Orange), !current || state.Mode != SpeedyMode.AutoActive),
+                "off" => KeyArt.Draw(size, "OFF", current ? KeyArt.Red : KeyArt.Muted(KeyArt.Red), !current),
                 _ => KeyArt.Draw(size, "PING", KeyArt.Blue, false),
             };
         }
