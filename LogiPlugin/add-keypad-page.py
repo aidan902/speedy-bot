@@ -10,9 +10,11 @@
     python3 LogiPlugin/add-keypad-page.py --relayout        set every Speedy Bot page on the keypad to the current layout
     python3 LogiPlugin/add-keypad-page.py --remove          take the General profile's Speedy Bot page out again
     python3 LogiPlugin/add-keypad-page.py --remove-screenconnect   take the ScreenConnect profile out again
+    python3 LogiPlugin/add-keypad-page.py --remove-speedybot       take the Speedy Bot app profile out again
     python3 LogiPlugin/add-keypad-page.py --remove-app BUNDLE_ID   take an app profile out again
     --icon FILE.png   the icon to show for the app in Logi Options+ (otherwise taken from the installed app)
-Several of these can go in one run (for example --migrate --speedybot); the service is restarted once.
+Several of these can go in one run (for example --migrate --speedybot); the service is restarted once. Anything
+else on the command line (a misspelled option, say) stops the script before it changes anything.
 
 Keys, row by row: On | Off | Auto (the current mode's key lights up); Type the clipboard (like ⌘⇧V) | empty |
 Capture the session window (like ⇧⌘2); Paste, no send | empty | Paste and send. Needs the Speedy Bot plugin installed
@@ -72,7 +74,15 @@ def speedy_page():
 
 
 def general_profile_path():
-    found = glob.glob(os.path.join(DEVICE_DIR, "@_defaultmac", "Profiles", "*", "ProfileInfo.json"))
+    """The General profile the keypad uses: the one its ApplicationInfo.json names, else the only one there is."""
+    general_dir = os.path.join(DEVICE_DIR, "@_defaultmac")
+    try:
+        name = json.load(open(os.path.join(general_dir, "ApplicationInfo.json"), encoding="utf-8")).get("defaultProfileName")
+    except (OSError, ValueError):
+        name = None
+    if name and os.path.isfile(os.path.join(general_dir, "Profiles", name, "ProfileInfo.json")):
+        return os.path.join(general_dir, "Profiles", name, "ProfileInfo.json")
+    found = glob.glob(os.path.join(general_dir, "Profiles", "*", "ProfileInfo.json"))
     if len(found) != 1:
         sys.exit(f"Expected one keypad General profile, found {len(found)}. Is an MX Creative Keypad set up in Logi Options+?")
     return found[0]
@@ -153,11 +163,12 @@ def app_files(general, icon, bundle, display):
     return files
 
 
-def relayout_profiles():
-    """{path: bytes} for every keypad profile whose Speedy Bot page differs from the current layout."""
+def relayout_profiles(pending):
+    """{path: bytes} for every keypad profile whose Speedy Bot page differs from the current layout (building on
+    what this run is already about to write, in `pending`)."""
     out = {}
     for path in glob.glob(os.path.join(DEVICE_DIR, "*", "Profiles", "*", "ProfileInfo.json")):
-        d = json.load(open(path, encoding="utf-8"))
+        d = json.loads(pending[path].decode()) if path in pending else json.load(open(path, encoding="utf-8"))
         changed = False
         for mode in d["layout"]["layoutModes"]:
             for ws in mode.get("workspaces") or []:
@@ -235,20 +246,43 @@ def apply_while_stopped(writes, remove_dirs=()):
         subprocess.run(["open", "-g", "-b", "com.logi.pluginservice"])
 
 
+# Every option and how many values it takes.
+OPTIONS = {"--screenconnect": 0, "--speedybot": 0, "--app": 2, "--migrate": 0, "--relayout": 0, "--remove": 0,
+           "--remove-screenconnect": 0, "--remove-speedybot": 0, "--remove-app": 1, "--icon": 1}
+
+
+def parse(argv):
+    """{option: [values]}; anything unknown, repeated or missing a value stops the script before it changes anything."""
+    opts, i = {}, 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("-h", "--help"):
+            print(__doc__)
+            sys.exit(0)
+        if a not in OPTIONS:
+            sys.exit(f"Unknown option {a!r}; nothing changed. The options are: {', '.join(OPTIONS)}")
+        if a in opts:
+            sys.exit(f"{a} is given twice; nothing changed. Run the script once per change.")
+        n = OPTIONS[a]
+        values = argv[i + 1:i + 1 + n]
+        if len(values) < n or any(v.startswith("--") for v in values):
+            sys.exit(f"{a} needs {n} value(s); nothing changed.")
+        opts[a] = values
+        i += 1 + n
+    return opts
+
+
 def main():
-    args = sys.argv[1:]
-    def value(flag, n=1):
-        i = args.index(flag)
-        if len(args) < i + 1 + n:
-            sys.exit(f"{flag} needs {n} value(s)")
-        return args[i + 1:i + 1 + n]
-    icon_arg = value("--icon")[0] if "--icon" in args else None
+    args = parse(sys.argv[1:])
+    icon_arg = args["--icon"][0] if "--icon" in args else None
     writes, removes, done = {}, [], []
 
-    for flag, bundle in (("--remove-screenconnect", SC_BUNDLE), ("--remove-app", None)):
+    for flag in ("--remove-screenconnect", "--remove-speedybot", "--remove-app"):
         if flag in args:
-            bundle = bundle or value(flag)[0]
+            bundle = {"--remove-screenconnect": SC_BUNDLE, "--remove-speedybot": SB_BUNDLE}.get(flag) or args[flag][0]
             d = os.path.join(DEVICE_DIR, bundle.lower())
+            if not bundle.strip(". /") or os.path.dirname(os.path.normpath(d)) != DEVICE_DIR or bundle.startswith("@"):
+                sys.exit(f"{bundle!r} is not an app's bundle id; nothing changed.")
             if not os.path.isdir(d):
                 sys.exit(f"There is no keypad profile for {bundle}; nothing changed.")
             removes.append(d)
@@ -260,19 +294,20 @@ def main():
     if "--speedybot" in args:
         apps.append((SB_BUNDLE, "Speedy Bot"))
     if "--app" in args:
-        apps.append(tuple(value("--app", 2)))
+        apps.append(tuple(args["--app"]))
     wants_general = not apps and not removes and "--migrate" not in args and "--relayout" not in args or "--remove" in args
     if (apps or wants_general) and "--remove" not in args and not os.path.isdir(os.path.join(ROOT, "Plugins", "SpeedyBot")):
         sys.exit("The Speedy Bot plugin is not installed. Run LogiPlugin/build.sh first.")
 
-    general_path = general_profile_path()
-    general = json.load(open(general_path, encoding="utf-8"))
+    # The General profile is only needed to change its page, or as the model for a new app profile.
+    general_path = general_profile_path() if apps or wants_general else None
+    general = json.load(open(general_path, encoding="utf-8")) if general_path else None
 
     if "--migrate" in args:
         writes.update(migrated_profiles())
         done.append("Pointed the older Speedy Bot keys at the current commands." if writes else "No keys needed updating.")
     if "--relayout" in args:
-        laid = relayout_profiles()
+        laid = relayout_profiles(writes)
         writes.update(laid)
         done.append(f"Laid out {len(laid)} Speedy Bot page(s) with the current keys." if laid else "Every Speedy Bot page already has the current keys.")
 
@@ -308,6 +343,8 @@ def main():
         general["lastModifiedTimeUtc"] = now_utc()
         writes[general_path] = dump(general).encode()
 
+    # A profile removed in this run is not written back (that would leave half a profile behind).
+    writes = {p: b for p, b in writes.items() if not any(p.startswith(d + os.sep) for d in removes)}
     if not writes and not removes:
         print("\n".join(done) or "Nothing to do.")
         return

@@ -68,23 +68,51 @@ public enum ChatSend {
 
     // MARK: waking ChatGPT's accessibility
 
+    /// Which apps Speedy Bot switched the flag on for. Also written down (by pid and the process's start time), so
+    /// that a flag left on by an earlier run (a crash, a Force Quit, the --dump-chat diagnostic) is still known to
+    /// be Speedy Bot's to switch off, and one VoiceOver switched on never is.
     private final class Woken: @unchecked Sendable {
         private let lock = NSLock()
         private var askedAt: [pid_t: Date] = [:]
         private var ours: Set<pid_t> = []
+        private static let recordKey = "axWokenByUs"
         func claim(_ pid: pid_t, interval: TimeInterval) -> Bool {
             lock.lock(); defer { lock.unlock() }
             if let last = askedAt[pid], Date().timeIntervalSince(last) < interval { return false }
             askedAt[pid] = Date()
             return true
         }
-        func markOurs(_ pid: pid_t) { lock.lock(); ours.insert(pid); lock.unlock() }
+        func markOurs(_ pid: pid_t) {
+            lock.lock(); defer { lock.unlock() }
+            ours.insert(pid)
+            var record = Self.record().filter { Int32($0.key).map { Self.startTime(of: $0) != nil } ?? false }
+            record[String(pid)] = Self.startTime(of: pid)
+            UserDefaults.standard.set(record, forKey: Self.recordKey)
+        }
+        /// The flag on this app was switched on by an earlier Speedy Bot (same process, not a reused pid).
+        func wasOurs(_ pid: pid_t) -> Bool {
+            guard let started = Self.startTime(of: pid) else { return false }
+            return Self.record()[String(pid)] == started
+        }
         func takeOurs() -> [pid_t] {
             lock.lock(); defer { lock.unlock() }
             let all = Array(ours)
             ours.removeAll()
             askedAt.removeAll()
+            var record = Self.record()
+            for pid in all { record[String(pid)] = nil }
+            UserDefaults.standard.set(record, forKey: Self.recordKey)
             return all
+        }
+        private static func record() -> [String: Int] {
+            UserDefaults.standard.dictionary(forKey: recordKey) as? [String: Int] ?? [:]
+        }
+        /// When a process started (seconds since 1970); nil when it is not running.
+        private static func startTime(of pid: pid_t) -> Int? {
+            var info = proc_bsdinfo()
+            let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+            guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+            return Int(info.pbi_start_tvsec)
         }
     }
     private static let woken = Woken()
@@ -111,13 +139,18 @@ public enum ChatSend {
     /// window frame to accessibility until an assistive app asks, and the request it answers is the flag VoiceOver
     /// sets, AXEnhancedUserInterface (it ignores AXManualAccessibility). Measured: the message box appears about
     /// 2.5 s later and stays readable with the app in the background. Left alone when the flag is already on
-    /// (VoiceOver, or an earlier wake); asked at most every 30 s per app.
-    public static func wakeAccessibility(pid: pid_t) {
+    /// (VoiceOver, or an earlier wake, which is taken over when it was Speedy Bot's); asked at most every 30 s per app.
+    /// `takeOver`: false for a passing look (the diagnostic), which must not switch off what the running app relies on.
+    public static func wakeAccessibility(pid: pid_t, takeOver: Bool = true) {
         flagQueue.async {
             guard woken.claim(pid, interval: 30) else { return }
             let app = AXUIElementCreateApplication(pid)
             AXUIElementSetMessagingTimeout(app, timeout)
-            if (attr(app, "AXEnhancedUserInterface") as? Bool) == true { return }
+            if (attr(app, "AXEnhancedUserInterface") as? Bool) == true {
+                // Already on: ours to switch off later only if an earlier Speedy Bot switched it on.
+                if takeOver, woken.wasOurs(pid) { woken.markOurs(pid) }
+                return
+            }
             AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
             woken.markOurs(pid)
         }

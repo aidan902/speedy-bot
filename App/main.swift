@@ -86,11 +86,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         observers = [
             DarwinObserver(name: SpeedyShared.changedNotification) { [weak self] in self?.state.reloadFromStore() },
             DarwinObserver(name: SpeedyShared.showWindowNotification) { [weak self] in self?.window?.show() },
-            DarwinObserver(name: SpeedyShared.keyTypeNotification) { [weak self] in self?.state.keyAction(.type) },
-            DarwinObserver(name: SpeedyShared.keyCaptureNotification) { [weak self] in self?.state.keyAction(.capture) },
-            DarwinObserver(name: SpeedyShared.keyPasteNotification) { [weak self] in self?.state.keyAction(.paste) },
-            DarwinObserver(name: SpeedyShared.keyPasteSendNotification) { [weak self] in self?.state.keyAction(.pasteSend) },
         ]
+        // The keypad's action keys act only with a fresh press file from the plugin (see KeypadPress).
+        let keys: [(String, AppState.KeyAction)] = [(SpeedyShared.keyTypeNotification, .type), (SpeedyShared.keyCaptureNotification, .capture),
+                                                     (SpeedyShared.keyPasteNotification, .paste), (SpeedyShared.keyPasteSendNotification, .pasteSend)]
+        for (name, action) in keys {
+            observers.append(DarwinObserver(name: name) { [weak self] in
+                let key = action.rawValue.lowercased()
+                guard KeypadPress.consume(key) else {
+                    SpeedyShared.log.notice("keypad: \(key, privacy: .public) signal ignored (no fresh press from the keypad plugin)")
+                    return
+                }
+                self?.state.keyAction(action)
+            })
+        }
         state.start()
         started = true
         for link in pendingLinks { state.handle(url: link) }
@@ -192,6 +201,19 @@ if CommandLine.arguments.contains("--selftest") {
     expect("link bare", link("speedybot://"), "start")
     expect("link unknown", link("speedybot://typeit"), "nil")
     expect("link other scheme", link("https://toggle"), "nil")
+    let pressDir = FileManager.default.temporaryDirectory.appendingPathComponent("speedybot-selftest-\(getpid())", isDirectory: true)
+    try? FileManager.default.createDirectory(at: pressDir, withIntermediateDirectories: true)
+    let press = { (key: String, body: String?) -> String in
+        if let body { try? body.write(to: pressDir.appendingPathComponent(key), atomically: true, encoding: .utf8) }
+        return KeypadPress.consume(key, in: pressDir) ? "yes" : "no"
+    }
+    let nowMs = String(Int(Date().timeIntervalSince1970 * 1000))
+    expect("press fresh", press("type", nowMs), "yes")
+    expect("press used up", press("type", nil), "no")
+    expect("press missing", press("capture", nil), "no")
+    expect("press stale", press("paste", String(Int(Date().timeIntervalSince1970 * 1000) - 10_000)), "no")
+    expect("press junk", press("pastesend", "hello"), "no")
+    try? FileManager.default.removeItem(at: pressDir)
     let w = { (ip: String, c: PingCommand) in LaunchScript.Window(ip: IPv4(ip)!, command: c) }
     expect("launch one", LaunchScript.directRunLine([w("172.16.37.4", .pingForever)], port: 443, custom: "", tile: .off) ?? "nil",
            "powershell -NoExit -Command \"ping -t 172.16.37.4\"")
@@ -263,7 +285,7 @@ if CommandLine.arguments.contains("--dump-chat") {
         let pid = app.processIdentifier
         print("== \(app.localizedName ?? "?") [\(app.bundleIdentifier ?? "?")] awake=\(ChatSend.isAwake(pid: pid))")
         if PasteTarget.chatGPT.matches(app) {
-            ChatSend.wakeAccessibility(pid: pid)
+            ChatSend.wakeAccessibility(pid: pid, takeOver: false)
             for i in 1...8 where !ChatSend.isAwake(pid: pid) {
                 Thread.sleep(forTimeInterval: 0.5)
                 print("   t+\(Double(i) * 0.5)s awake=\(ChatSend.isAwake(pid: pid)) front=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")")
@@ -274,6 +296,7 @@ if CommandLine.arguments.contains("--dump-chat") {
         print("   window \(window.windowID): box=\(state.text == nil ? "unreadable" : "\(state.text!.count) chars, typed \(state.typed?.count ?? 0)") streaming=\(state.streaming) send=\(state.sendEnabled.map { $0 ? "enabled" : "disabled" } ?? "none")")
         print("   composer buttons: \(state.buttons.joined(separator: ", "))")
     }
+    ChatSend.releaseAccessibility(wait: true)   // switched back off if this run switched it on
     exit(0)
 }
 

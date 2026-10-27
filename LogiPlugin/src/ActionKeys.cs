@@ -1,12 +1,16 @@
 namespace Loupedeck.SpeedyBotPlugin
 {
     using System;
+    using System.IO;
     using System.Runtime.InteropServices;
     using System.Threading;
 
     // The keys that do something in a session: type the clipboard (⌘⇧V), capture the session window (⇧⌘2), and
     // put the waiting screenshot into the chat app without sending it, or send it. They reach Speedy Bot as Darwin
-    // notifications, which only programs on this Mac can post: unlike speedybot:// links, no web page can.
+    // notifications, which only programs on this Mac can post: unlike speedybot:// links, no web page can. A
+    // notification says nothing about who posted it, and sandboxed apps can post them too, so each press first
+    // writes a press file into Speedy Bot's own folder (which sandboxed apps cannot reach); Speedy Bot acts only
+    // on a notification whose press file is there and fresh.
 
     /// Posting a Darwin notification to Speedy Bot, starting it first when it is not running.
     internal static class AppSignal
@@ -16,6 +20,20 @@ namespace Loupedeck.SpeedyBotPlugin
 
         [DllImport("/usr/lib/libSystem.dylib")]
         private static extern UInt32 notify_post([MarshalAs(UnmanagedType.LPUTF8Str)] String name);
+
+        private static readonly String PressFolder = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            "Library", "Application Support", "Speedy Bot", "keypad");
+
+        /// The press file for this key: the time, in milliseconds since 1970, written in one go.
+        private static void WritePress(String key)
+        {
+            Directory.CreateDirectory(PressFolder);
+            var path = Path.Combine(PressFolder, key);
+            var temp = path + ".tmp";
+            File.WriteAllText(temp, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString());
+            File.Move(temp, path, true);
+        }
 
         public static void Post(String key)
         {
@@ -29,6 +47,7 @@ namespace Loupedeck.SpeedyBotPlugin
                         state.Send("start");
                         Thread.Sleep(2500);   // let it get going before it is asked to act
                     }
+                    WritePress(key);
                     var status = notify_post(Group + ".key." + key);
                     if (status != 0)
                     {

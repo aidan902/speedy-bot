@@ -271,7 +271,9 @@ final class AppState: ObservableObject {
 
     func keyAction(_ action: KeyAction) {
         SpeedyShared.log.notice("keypad: \(action.rawValue, privacy: .public)")
-        guard active else {
+        let pasteKey = action == .paste || action == .pasteSend
+        // In Auto, just after a session closes, the screenshot still waiting can be pasted from the keypad too.
+        guard active || (pasteKey && lingering && armed) else {
             Toast.show(mode == .off ? "Speedy Bot is off" : "Speedy Bot: Auto, waiting for a ScreenConnect session", seconds: 2)
             return
         }
@@ -279,7 +281,9 @@ final class AppState: ObservableObject {
         case .type: typer.typeFromKey()
         case .capture: capture.captureFromKey()
         case .paste, .pasteSend:
-            screenshot.pasteFromKey(send: action == .pasteSend) { [weak self] in self?.capture.captureFromKey() }
+            screenshot.pasteFromKey(send: action == .pasteSend, canCapture: active && screenConnectOpen) { [weak self] in
+                self?.capture.captureFromKey()
+            }
         }
     }
 
@@ -293,7 +297,7 @@ final class AppState: ObservableObject {
     }
 
     /// Where Speedy Bot writes what it is doing, for other tools to show (the Logitech keypad key).
-    static var stateFileURL: URL {
+    nonisolated static var stateFileURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Speedy Bot", isDirectory: true)
             .appendingPathComponent("state.json")

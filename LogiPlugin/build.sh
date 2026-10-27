@@ -31,7 +31,8 @@ OUT="$HOME/Library/Caches/speedy-bot-build/logi-plugin"
 rm -f "$OUT/bin/SpeedyBotPlugin.dll"
 BUILD_LOG="$(mktemp "${TMPDIR:-/tmp}/speedybot-logi-build.XXXXXX")"
 if ! "$DOTNET" build -c Release -o "$OUT/bin" -nologo >"$BUILD_LOG" 2>&1; then
-  grep -E "error" "$BUILD_LOG" | sort -u >&2
+  # The error lines, or (when the failure printed none, e.g. no .NET SDK) the end of the log.
+  grep -iE "error" "$BUILD_LOG" | sort -u >&2 || tail -n 30 "$BUILD_LOG" >&2 || true
   echo "Build failed. Full log: $BUILD_LOG" >&2
   exit 1
 fi

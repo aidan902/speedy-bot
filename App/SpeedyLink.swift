@@ -31,3 +31,25 @@ enum SpeedyLink {
         return Action(rawValue: name) ?? aliases[name]
     }
 }
+
+/// Proof that an action key really came from the keypad plugin. A Darwin notification says nothing about who posted
+/// it, and sandboxed apps can post them too, so the plugin first writes a press file (the time, in milliseconds since
+/// 1970) into a folder of Speedy Bot's that sandboxed apps cannot reach, then posts. An action runs only when its
+/// file is there and fresh; the file is used up either way.
+enum KeypadPress {
+    static var folder: URL { AppState.stateFileURL.deletingLastPathComponent().appendingPathComponent("keypad", isDirectory: true) }
+
+    /// `key`: the plugin's name for the key (type, capture, paste, pastesend).
+    static func consume(_ key: String, in folder: URL = folder, now: Date = Date()) -> Bool {
+        let url = folder.appendingPathComponent(key)
+        // Only a plain file written by this user (never a link to something else).
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              attrs[.type] as? FileAttributeType == .typeRegular,
+              (attrs[.ownerAccountID] as? NSNumber)?.uint32Value == getuid() else { return false }
+        let text = try? String(contentsOf: url, encoding: .utf8)
+        try? FileManager.default.removeItem(at: url)
+        guard let ms = text.flatMap({ Double($0.trimmingCharacters(in: .whitespacesAndNewlines)) }) else { return false }
+        let age = now.timeIntervalSince1970 - ms / 1000
+        return age > -1 && age < 3
+    }
+}
