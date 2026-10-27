@@ -40,7 +40,7 @@ final class AppState: ObservableObject {
     /// session goes away, the screenshot features stay up while a screenshot is waiting (and for a few seconds
     /// regardless, because the corner preview can still be holding the last one back).
     private var lingering: Bool {
-        mode == .auto && !screenConnectOpen && (armed || Date().timeIntervalSince(sessionClosedAt) < 12)
+        mode == .auto && !screenConnectOpen && (armed || screenshot.keyPasteWaiting || Date().timeIntervalSince(sessionClosedAt) < 12)
     }
     /// Not switched off (the options are usable). Whether anything is actually running is `active`.
     var masterEnabled: Bool { mode != .off }
@@ -286,7 +286,8 @@ final class AppState: ObservableObject {
             screenshot.cancelKeyIntent("another key")
             capture.captureFromKey()
         case .paste, .pasteSend:
-            screenshot.pasteFromKey(send: action == .pasteSend, canCapture: active && screenConnectOpen) { [weak self] in
+            screenshot.pasteFromKey(send: action == .pasteSend, canCapture: active && screenConnectOpen,
+                                    captureInFlight: capture.capturing) { [weak self] in
                 self?.capture.captureFromKey() ?? false
             }
         }
@@ -373,7 +374,7 @@ final class AppState: ObservableObject {
     /// The capture shortcut was used: the screenshot that follows was taken from the session.
     func noteSessionCapture() { screenshot.noteSessionCapture() }
     /// The capture of the session window did not produce a picture: a keypad paste waiting for it is dropped.
-    func sessionCaptureFailed() { screenshot.cancelKeyIntent("the capture failed") }
+    func sessionCaptureFailed() { screenshot.noteSessionCaptureFailed() }
 
     /// Where screenshots are being looked for right now (nil when neither screenshot feature is running).
     var screenshotSource: ScreenshotSource? { screenshot.source }

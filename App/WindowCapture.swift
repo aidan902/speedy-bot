@@ -14,7 +14,7 @@ final class WindowCaptureController {
     private unowned let state: AppState
     private var hotKey: GlobalHotKey?
     private var registered: HotKeySpec?
-    private var capturing = false
+    private(set) var capturing = false
 
     init(state: AppState) { self.state = state }
 

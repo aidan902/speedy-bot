@@ -62,6 +62,18 @@ enum SessionWindows {
         }
         return []
     }
+
+    /// Whether this ScreenConnect process still has a session window anywhere (on any desktop, minimized too).
+    static func hasWindow(pid: pid_t) -> Bool {
+        guard let raw = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return true }
+        return raw.contains { d in
+            guard (d[kCGWindowOwnerPID as String] as? pid_t) == pid, (d[kCGWindowLayer as String] as? Int) == 0,
+                  let bd = d[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: bd),
+                  r.width >= 400, r.height >= 300 else { return false }
+            let name = d[kCGWindowName as String] as? String ?? ""
+            return !name.hasPrefix("Chat - ") && !name.hasPrefix("Status - ")
+        }
+    }
 }
 
 /// Types commands into a ScreenConnect session from a button in this app: brings the session window to the

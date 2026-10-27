@@ -214,6 +214,10 @@ if CommandLine.arguments.contains("--selftest") {
     expect("press stale", press("paste", String(Int(Date().timeIntervalSince1970 * 1000) - 10_000)), "no")
     expect("press junk", press("pastesend", "hello"), "no")
     try? FileManager.default.removeItem(at: pressDir)
+    let shot = { (a: String, b: String) in ScreenshotPasteController.sameCapture(URL(fileURLWithPath: "/s/" + a), URL(fileURLWithPath: "/s/" + b)) ? "same" : "own" }
+    expect("second display", shot("Screenshot 2026-10-26 at 9.15.32 PM.png", "Screenshot 2026-10-26 at 9.15.32 PM (2).png"), "same")
+    expect("next screenshot", shot("Screenshot 2026-10-26 at 9.15.32 PM.png", "Screenshot 2026-10-26 at 9.15.33 PM.png"), "own")
+    expect("same file", shot("Screenshot 2026-10-26 at 9.15.32 PM.png", "Screenshot 2026-10-26 at 9.15.32 PM.png"), "own")
     let w = { (ip: String, c: PingCommand) in LaunchScript.Window(ip: IPv4(ip)!, command: c) }
     expect("launch one", LaunchScript.directRunLine([w("172.16.37.4", .pingForever)], port: 443, custom: "", tile: .off) ?? "nil",
            "powershell -NoExit -Command \"ping -t 172.16.37.4\"")
