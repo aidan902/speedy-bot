@@ -4,9 +4,14 @@
     python3 LogiPlugin/add-keypad-page.py                   add a "Speedy Bot" page to the General profile
     python3 LogiPlugin/add-keypad-page.py --screenconnect   add a ScreenConnect profile: the keypad switches to the
                                                             Speedy Bot keys by itself whenever ScreenConnect is in front
+    python3 LogiPlugin/add-keypad-page.py --speedybot       the same while Speedy Bot itself is the app in front
+    python3 LogiPlugin/add-keypad-page.py --app BUNDLE_ID "Name"   the same for any app
+    python3 LogiPlugin/add-keypad-page.py --migrate         point keys made by older versions at the current commands
     python3 LogiPlugin/add-keypad-page.py --remove          take the General profile's Speedy Bot page out again
     python3 LogiPlugin/add-keypad-page.py --remove-screenconnect   take the ScreenConnect profile out again
-    --icon FILE.png   the ScreenConnect icon to show in Logi Options+ (otherwise taken from the installed app)
+    python3 LogiPlugin/add-keypad-page.py --remove-app BUNDLE_ID   take an app profile out again
+    --icon FILE.png   the icon to show for the app in Logi Options+ (otherwise taken from the installed app)
+Several of these can go in one run (for example --migrate --speedybot); the service is restarted once.
 
 Keys: On/Off (shows the live state), On, Auto, Off, Multi Ping. Needs the Speedy Bot plugin installed
 (LogiPlugin/build.sh). The keypad is device Loupedeck70.
@@ -25,9 +30,14 @@ DEVICE_DIR = os.path.join(ROOT, "Applications", DEVICE)
 PROC = "LogiPluginService.app/Contents/MacOS/LogiPluginService"
 SC_BUNDLE = "com.screenconnect.client"
 SC_DIR = os.path.join(DEVICE_DIR, SC_BUNDLE.lower())
+SB_BUNDLE = "net.fm.speedybot"
 P = "$SpeedyBot___Loupedeck.SpeedyBotPlugin."
-KEYS = [P + "ToggleCommand", P + "ModeCommand___on", P + "ModeCommand___auto", P + "ModeCommand___off",
-        P + "ModeCommand___multiping", None, None, None, None]
+# Plain commands only: Logi Options+ shows a warning sign instead of the picture of a parameterized command.
+KEYS = [P + "ToggleCommand", P + "OnCommand", P + "AutoCommand", P + "OffCommand", P + "MultiPingCommand",
+        None, None, None, None]
+# Keys made by 0.7.1 (one parameterized command) -> the plain commands that replace it.
+MIGRATE = {P + "ModeCommand___on": P + "OnCommand", P + "ModeCommand___auto": P + "AutoCommand",
+           P + "ModeCommand___off": P + "OffCommand", P + "ModeCommand___multiping": P + "MultiPingCommand"}
 PAGE = "Speedy Bot"
 T_PAGE = "Loupedeck.Service.Devices.Loupedeck7Devices.ProfileLayoutPage7, LoupedeckService"
 T_CONTROL = "Loupedeck.Service.Devices.Loupedeck7Devices.ProfileLayoutControl7, LoupedeckService"
@@ -64,16 +74,16 @@ def general_profile_path():
     return found[0]
 
 
-def screenconnect_icon(arg_icon):
-    """PNG bytes of ScreenConnect's icon, or None."""
+def app_icon(bundle, arg_icon):
+    """PNG bytes of an app's icon, or None."""
     if arg_icon:
         return open(arg_icon, "rb").read()
-    apps = subprocess.run(["mdfind", f'kMDItemCFBundleIdentifier == "{SC_BUNDLE}"'], capture_output=True, text=True).stdout.split("\n")
+    apps = subprocess.run(["mdfind", f'kMDItemCFBundleIdentifier == "{bundle}"'], capture_output=True, text=True).stdout.split("\n")
     for app in filter(None, apps):
         for dirpath, _, files in os.walk(os.path.join(app, "Contents", "Resources")):
             for f in files:
                 if f.endswith(".icns"):
-                    out = os.path.join(os.path.expanduser("~/Library/Caches/speedy-bot-build"), "screenconnect-icon.png")
+                    out = os.path.join(os.path.expanduser("~/Library/Caches/speedy-bot-build"), f"{bundle.lower()}-icon.png")
                     os.makedirs(os.path.dirname(out), exist_ok=True)
                     if subprocess.run(["sips", "-s", "format", "png", "-z", "256", "256", os.path.join(dirpath, f), "--out", out],
                                       capture_output=True).returncode == 0:
@@ -81,8 +91,9 @@ def screenconnect_icon(arg_icon):
     return None
 
 
-def screenconnect_files(general, icon):
-    """{path: bytes} for a new ScreenConnect app profile on the keypad."""
+def app_files(general, icon, bundle, display):
+    """{path: bytes} for a new app profile on the keypad that shows the Speedy Bot keys while that app is in front."""
+    app_dir = os.path.join(DEVICE_DIR, bundle.lower())
     profile_name, workspace = guid(), guid()
     profile = {}
     for key in general:   # same keys, same order as a profile the service wrote itself
@@ -91,10 +102,10 @@ def screenconnect_files(general, icon):
         "$type": general["$type"],
         "name": profile_name,
         "profileFlags": "None",
-        "displayName": "ScreenConnect",
+        "displayName": display,
         "description": "",
         "deviceType": DEVICE,
-        "applicationName": SC_BUNDLE.lower(),
+        "applicationName": bundle.lower(),
         "nativePluginName": None,
         "hasNativePlugin": False,
         "additionalNativePluginNames": ["DefaultMac", "SpeedyBot"],
@@ -117,32 +128,56 @@ def screenconnect_files(general, icon):
     })
     info = {
         "$type": "Loupedeck.Service.SupportedApplicationInfo, LoupedeckService",
-        "name": SC_BUNDLE.lower(),
-        "displayName": "ScreenConnect",
+        "name": bundle.lower(),
+        "displayName": display,
         "description": None,
         "deviceType": DEVICE,
         "nativePluginName": None,
         "hasNativePlugin": False,
-        "processOrBundleName": SC_BUNDLE,
+        "processOrBundleName": bundle,
         "modes": [{"$type": T_APPMODE, "name": "main", "parentModeName": None, "displayName": "Main"}],
         "defaultProfileName": profile_name,
         "isEnabled": True,
     }
     files = {
-        os.path.join(SC_DIR, "ApplicationInfo.json"): dump(info).encode(),
-        os.path.join(SC_DIR, "Profiles", profile_name, "ProfileInfo.json"): dump(profile).encode(),
+        os.path.join(app_dir, "ApplicationInfo.json"): dump(info).encode(),
+        os.path.join(app_dir, "Profiles", profile_name, "ProfileInfo.json"): dump(profile).encode(),
     }
     if icon:
-        files[os.path.join(SC_DIR, "ApplicationIcon.png")] = icon
-        files[os.path.join(SC_DIR, "Profiles", profile_name, "ApplicationIcon.png")] = icon
+        files[os.path.join(app_dir, "ApplicationIcon.png")] = icon
+        files[os.path.join(app_dir, "Profiles", profile_name, "ApplicationIcon.png")] = icon
     return files
+
+
+def migrated_profiles():
+    """{path: bytes} for every keypad profile that still uses keys from an older plugin version."""
+    out = {}
+    for path in glob.glob(os.path.join(DEVICE_DIR, "*", "Profiles", "*", "ProfileInfo.json")):
+        text = open(path, encoding="utf-8").read()
+        if not any(old in text for old in MIGRATE):
+            continue
+        d = json.loads(text)
+        changed = 0
+        for mode in d["layout"]["layoutModes"]:
+            for ws in mode.get("workspaces") or []:
+                for kind in ("pressPages", "rotatePages"):
+                    for page in ws.get(kind) or []:
+                        for c in page.get("controls") or []:
+                            if c.get("pressAction") in MIGRATE:
+                                c["pressAction"] = MIGRATE[c["pressAction"]]
+                                changed += 1
+        if changed:
+            d["lastModifiedTimeUtc"] = now_utc()
+            out[path] = dump(d).encode()
+            print(f"Will update {changed} key(s) in {os.path.relpath(path, DEVICE_DIR)}")
+    return out
 
 
 def running():
     return subprocess.run(["pgrep", "-f", PROC], capture_output=True).returncode == 0
 
 
-def apply_while_stopped(writes, remove_dir=None):
+def apply_while_stopped(writes, remove_dirs=()):
     """Writes {path: bytes} (and/or removes a folder) while the plugin service is stopped, then lets it start."""
     backup = os.path.expanduser("~/Library/Caches/speedy-bot-build/logi-profile-backup-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
     shutil.copytree(DEVICE_DIR, backup)
@@ -153,8 +188,9 @@ def apply_while_stopped(writes, remove_dir=None):
         time.sleep(0.05)
     if running():
         sys.exit("The Logi Plugin Service did not stop; nothing changed.")
-    if remove_dir and os.path.isdir(remove_dir):
-        shutil.rmtree(remove_dir)
+    for d in remove_dirs:
+        if os.path.isdir(d):
+            shutil.rmtree(d)
     for path, data in writes.items():
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = path + ".speedybot-tmp"
@@ -170,42 +206,78 @@ def apply_while_stopped(writes, remove_dir=None):
 
 def main():
     args = sys.argv[1:]
-    icon_arg = args[args.index("--icon") + 1] if "--icon" in args else None
-    if "--remove-screenconnect" in args:
-        if not os.path.isdir(SC_DIR):
-            sys.exit("There is no ScreenConnect profile on the keypad; nothing changed.")
-        apply_while_stopped({}, remove_dir=SC_DIR)
-        print("Removed the keypad's ScreenConnect profile.")
-        return
-    if not os.path.isdir(os.path.join(ROOT, "Plugins", "SpeedyBot")) and "--remove" not in args:
+    def value(flag, n=1):
+        i = args.index(flag)
+        if len(args) < i + 1 + n:
+            sys.exit(f"{flag} needs {n} value(s)")
+        return args[i + 1:i + 1 + n]
+    icon_arg = value("--icon")[0] if "--icon" in args else None
+    writes, removes, done = {}, [], []
+
+    for flag, bundle in (("--remove-screenconnect", SC_BUNDLE), ("--remove-app", None)):
+        if flag in args:
+            bundle = bundle or value(flag)[0]
+            d = os.path.join(DEVICE_DIR, bundle.lower())
+            if not os.path.isdir(d):
+                sys.exit(f"There is no keypad profile for {bundle}; nothing changed.")
+            removes.append(d)
+            done.append(f"Removed the keypad profile for {bundle}.")
+
+    apps = []
+    if "--screenconnect" in args:
+        apps.append((SC_BUNDLE, "ScreenConnect"))
+    if "--speedybot" in args:
+        apps.append((SB_BUNDLE, "Speedy Bot"))
+    if "--app" in args:
+        apps.append(tuple(value("--app", 2)))
+    wants_general = not apps and not removes and "--migrate" not in args or "--remove" in args
+    if (apps or wants_general) and "--remove" not in args and not os.path.isdir(os.path.join(ROOT, "Plugins", "SpeedyBot")):
         sys.exit("The Speedy Bot plugin is not installed. Run LogiPlugin/build.sh first.")
+
     general_path = general_profile_path()
     general = json.load(open(general_path, encoding="utf-8"))
 
-    if "--screenconnect" in args:
-        if os.path.isdir(SC_DIR):
-            sys.exit("The keypad already has a ScreenConnect profile; nothing changed. (--remove-screenconnect takes it out.)")
-        apply_while_stopped(screenconnect_files(general, screenconnect_icon(icon_arg)))
-        print("Added a ScreenConnect profile: the keypad shows the Speedy Bot keys whenever ScreenConnect is in front.")
-        return
+    if "--migrate" in args:
+        writes.update(migrated_profiles())
+        done.append("Pointed the older Speedy Bot keys at the current commands." if writes else "No keys needed updating.")
 
-    pages = general["layout"]["layoutModes"][0]["workspaces"][0]["pressPages"]
-    has = any(p.get("displayName") == PAGE for p in pages)
-    if "--remove" in args:
-        if not has:
-            sys.exit("There is no Speedy Bot page; nothing changed.")
-        general["layout"]["layoutModes"][0]["workspaces"][0]["pressPages"] = [p for p in pages if p.get("displayName") != PAGE]
-    else:
-        if has:
-            sys.exit("The keypad already has a Speedy Bot page; nothing changed.")
-        pages.append(speedy_page())
-        names = general.get("additionalNativePluginNames") or []
-        if "SpeedyBot" not in names:
-            names.append("SpeedyBot")
-        general["additionalNativePluginNames"] = names
-    general["lastModifiedTimeUtc"] = now_utc()
-    apply_while_stopped({general_path: dump(general).encode()})
-    print("Removed the Speedy Bot page." if "--remove" in args else "Added the Speedy Bot page. On the keypad, press > to reach it.")
+    for bundle, display in apps:
+        if os.path.isdir(os.path.join(DEVICE_DIR, bundle.lower())):
+            sys.exit(f"The keypad already has a profile for {bundle}; nothing changed.")
+        icon = app_icon(bundle, icon_arg if len(apps) == 1 else None)
+        if bundle == SB_BUNDLE and not icon:
+            here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata", "Icon256x256.png")
+            icon = open(here, "rb").read() if os.path.exists(here) else None
+        writes.update(app_files(general, icon, bundle, display))
+        done.append(f"Added a {display} profile: the keypad shows the Speedy Bot keys whenever {display} is in front.")
+
+    if wants_general:
+        if general_path in writes:   # already migrated in this run: build on that
+            general = json.loads(writes[general_path].decode())
+        pages = general["layout"]["layoutModes"][0]["workspaces"][0]["pressPages"]
+        has = any(p.get("displayName") == PAGE for p in pages)
+        if "--remove" in args:
+            if not has:
+                sys.exit("There is no Speedy Bot page; nothing changed.")
+            general["layout"]["layoutModes"][0]["workspaces"][0]["pressPages"] = [p for p in pages if p.get("displayName") != PAGE]
+            done.append("Removed the Speedy Bot page.")
+        else:
+            if has:
+                sys.exit("The keypad already has a Speedy Bot page; nothing changed.")
+            pages.append(speedy_page())
+            names = general.get("additionalNativePluginNames") or []
+            if "SpeedyBot" not in names:
+                names.append("SpeedyBot")
+            general["additionalNativePluginNames"] = names
+            done.append("Added the Speedy Bot page. On the keypad, press > to reach it.")
+        general["lastModifiedTimeUtc"] = now_utc()
+        writes[general_path] = dump(general).encode()
+
+    if not writes and not removes:
+        print("\n".join(done) or "Nothing to do.")
+        return
+    apply_while_stopped(writes, removes)
+    print("\n".join(done))
 
 
 if __name__ == "__main__":
