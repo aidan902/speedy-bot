@@ -156,6 +156,9 @@ final class ScreenshotPasteController {
     /// A session screenshot that arrived while another paste was under way: pasted once that paste is done, if it
     /// is still the screenshot waiting.
     private var deferredAutoSend: (armedID: Int, returnTo: NSRunningApplication?, multi: Bool, at: Date)?
+    /// A paste the keypad asked for while no screenshot was waiting: the session window is captured, and the
+    /// capture that arrives next goes into the chat app this way (sent or not) instead of the usual rules.
+    private var keyIntent: (send: Bool, at: Date)?
     /// While an auto-paste of ours has the chat app in front (and just after), a screenshot still counts as taken
     /// in the session it came from.
     private var recentAutoPaste: (session: NSRunningApplication, chatPID: pid_t, until: Date)?
@@ -368,8 +371,40 @@ final class ScreenshotPasteController {
 
     /// The screenshot that has just been armed was taken while the tech was in a ScreenConnect session, and a
     /// chat window is open on this desktop: paste it there and send it, without waiting for any trigger.
+    /// The keypad's Paste / Paste-and-send keys: the waiting screenshot goes into the chat app (and, for Paste and
+    /// send, is sent the safe auto-send way); with none waiting, the session window is captured first (`capture`).
+    func pasteFromKey(send: Bool, capture: () -> Void) {
+        guard pasteEnabled else { Toast.show("Pasting screenshots is switched off in Speedy Bot", seconds: 2.5); return }
+        guard !pasting else { Toast.show("A paste is already under way", seconds: 1.5); return }
+        if let armed, stillValid(armed) {
+            keyIntent = nil
+            runKeyPaste(send: send, armed: armed)
+        } else {
+            keyIntent = (send, Date())
+            capture()
+        }
+    }
+
+    private func runKeyPaste(send: Bool, armed: Armed) {
+        guard let target = shortcutTarget() else {
+            Toast.show("Open \(PasteTarget.names(targets)) first", seconds: 2.5)
+            return
+        }
+        let session = NSWorkspace.shared.frontmostApplication.flatMap { FrontmostAppGate.isScreenConnect($0) ? $0 : nil }
+        SpeedyShared.log.notice("keypad: pasting \(send ? "and sending" : "without sending", privacy: .public)")
+        paste(into: target.app, window: target.window, armed: armed, pointerMustStay: false, thenSend: send, returnTo: session)
+    }
+
     private func sendIfTakenInSession(within memory: TimeInterval) {
         guard let armed else { return }
+        // The keypad asked for this capture: it goes the way the key said.
+        if let intent = keyIntent {
+            keyIntent = nil
+            if Date().timeIntervalSince(intent.at) < 8, !pasting {
+                runKeyPaste(send: intent.send, armed: armed)
+                return
+            }
+        }
         let front = NSWorkspace.shared.frontmostApplication
         var session = front.flatMap { FrontmostAppGate.isScreenConnect($0) ? $0 : nil }
         // An auto-paste of ours has the chat app in front for a moment: the tech is still in their session.

@@ -71,6 +71,13 @@ enum SpeedyShared {
     static let changedNotification = groupID + ".changed"
     /// Posted by a second copy of the app so the running one shows its window.
     static let showWindowNotification = groupID + ".showWindow"
+    /// Posted by the Logitech keypad plugin: type the clipboard into the session, capture the session window,
+    /// paste the waiting screenshot without sending, or paste and send it. Darwin notifications can only be posted
+    /// by programs running on this Mac, so unlike speedybot:// links no web page can trigger these.
+    static let keyTypeNotification = groupID + ".key.type"
+    static let keyCaptureNotification = groupID + ".key.capture"
+    static let keyPasteNotification = groupID + ".key.paste"
+    static let keyPasteSendNotification = groupID + ".key.pastesend"
     /// Kind string of the Control Center control.
     static let controlKind = "net.fm.speedybot.toggle"
 

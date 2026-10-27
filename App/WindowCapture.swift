@@ -57,6 +57,12 @@ final class WindowCaptureController {
 
     private var askedForScreenRecording = false
 
+    /// The keypad's Capture key: the same as the shortcut.
+    func captureFromKey() {
+        guard state.screenConnectOpen else { Toast.show("No ScreenConnect session to capture", seconds: 2); return }
+        fire()
+    }
+
     private func fire() {
         guard !capturing else { return }
         guard let windowID = sessionWindow() else {

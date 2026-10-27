@@ -128,6 +128,16 @@ final class RemoteTypingController {
 
     // MARK: the shortcut
 
+    /// The keypad's Type key: the same as the shortcut, so a ScreenConnect session has to be in front.
+    func typeFromKey() {
+        guard enabled else { Toast.show("Typing into ScreenConnect is switched off in Speedy Bot", seconds: 2.5); return }
+        guard let front = NSWorkspace.shared.frontmostApplication, FrontmostAppGate.isScreenConnect(front) else {
+            Toast.show("Click into the ScreenConnect session first, then press Type", seconds: 2.5)
+            return
+        }
+        fire()
+    }
+
     private func fire() {
         guard !typing else { return }
         guard let front = NSWorkspace.shared.frontmostApplication, FrontmostAppGate.isScreenConnect(front) else { return }

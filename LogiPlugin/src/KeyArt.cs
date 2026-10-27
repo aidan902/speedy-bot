@@ -10,6 +10,7 @@ namespace Loupedeck.SpeedyBotPlugin
         public static readonly BitmapColor Green = new BitmapColor(0x2D, 0xD4, 0x64);
         public static readonly BitmapColor Blue = new BitmapColor(0x3D, 0x9B, 0xFF);
         public static readonly BitmapColor Grey = new BitmapColor(0x8E, 0x8E, 0x93);
+        public static readonly BitmapColor White = new BitmapColor(0xF2, 0xF2, 0xF7);
 
         private static BitmapImage _icon;
 

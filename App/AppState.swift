@@ -266,6 +266,23 @@ final class AppState: ObservableObject {
         return true
     }
 
+    /// The keypad's action keys (Logitech plugin, via local Darwin notifications).
+    enum KeyAction: String { case type, capture, paste, pasteSend }
+
+    func keyAction(_ action: KeyAction) {
+        SpeedyShared.log.notice("keypad: \(action.rawValue, privacy: .public)")
+        guard active else {
+            Toast.show(mode == .off ? "Speedy Bot is off" : "Speedy Bot: Auto, waiting for a ScreenConnect session", seconds: 2)
+            return
+        }
+        switch action {
+        case .type: typer.typeFromKey()
+        case .capture: capture.captureFromKey()
+        case .paste, .pasteSend:
+            screenshot.pasteFromKey(send: action == .pasteSend) { [weak self] in self?.capture.captureFromKey() }
+        }
+    }
+
     /// A short note on screen, since a key press on a keypad gives no other sign.
     private func announceMode() {
         switch mode {

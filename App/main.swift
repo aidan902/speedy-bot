@@ -86,6 +86,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         observers = [
             DarwinObserver(name: SpeedyShared.changedNotification) { [weak self] in self?.state.reloadFromStore() },
             DarwinObserver(name: SpeedyShared.showWindowNotification) { [weak self] in self?.window?.show() },
+            DarwinObserver(name: SpeedyShared.keyTypeNotification) { [weak self] in self?.state.keyAction(.type) },
+            DarwinObserver(name: SpeedyShared.keyCaptureNotification) { [weak self] in self?.state.keyAction(.capture) },
+            DarwinObserver(name: SpeedyShared.keyPasteNotification) { [weak self] in self?.state.keyAction(.paste) },
+            DarwinObserver(name: SpeedyShared.keyPasteSendNotification) { [weak self] in self?.state.keyAction(.pasteSend) },
         ]
         state.start()
         started = true

@@ -7,13 +7,15 @@
     python3 LogiPlugin/add-keypad-page.py --speedybot       the same while Speedy Bot itself is the app in front
     python3 LogiPlugin/add-keypad-page.py --app BUNDLE_ID "Name"   the same for any app
     python3 LogiPlugin/add-keypad-page.py --migrate         point keys made by older versions at the current commands
+    python3 LogiPlugin/add-keypad-page.py --relayout        set every Speedy Bot page on the keypad to the current layout
     python3 LogiPlugin/add-keypad-page.py --remove          take the General profile's Speedy Bot page out again
     python3 LogiPlugin/add-keypad-page.py --remove-screenconnect   take the ScreenConnect profile out again
     python3 LogiPlugin/add-keypad-page.py --remove-app BUNDLE_ID   take an app profile out again
     --icon FILE.png   the icon to show for the app in Logi Options+ (otherwise taken from the installed app)
 Several of these can go in one run (for example --migrate --speedybot); the service is restarted once.
 
-Keys: On/Off (shows the live state), On, Auto, Off, Multi Ping. Needs the Speedy Bot plugin installed
+Keys, row by row: On | Off | Auto (the current mode's key lights up); Type the clipboard (like ⌘⇧V) | empty |
+Capture the session window (like ⇧⌘2); Paste, no send | empty | Paste and send. Needs the Speedy Bot plugin installed
 (LogiPlugin/build.sh). The keypad is device Loupedeck70.
 
 The ScreenConnect profile is written the way the plugin service's own CreateNewApplicationProfile makes one for an
@@ -33,8 +35,10 @@ SC_DIR = os.path.join(DEVICE_DIR, SC_BUNDLE.lower())
 SB_BUNDLE = "net.fm.speedybot"
 P = "$SpeedyBot___Loupedeck.SpeedyBotPlugin."
 # Plain commands only: Logi Options+ shows a warning sign instead of the picture of a parameterized command.
-KEYS = [P + "ToggleCommand", P + "OnCommand", P + "AutoCommand", P + "OffCommand", P + "MultiPingCommand",
-        None, None, None, None]
+# The page, row by row:  On | Off | Auto  /  Type (⌘⇧V) | - | Capture (⇧⌘2)  /  Paste, no send | - | Paste and send
+KEYS = [P + "OnCommand", P + "OffCommand", P + "AutoCommand",
+        P + "TypeCommand", None, P + "CaptureCommand",
+        P + "PasteCommand", None, P + "PasteSendCommand"]
 # Keys made by 0.7.1 (one parameterized command) -> the plain commands that replace it.
 MIGRATE = {P + "ModeCommand___on": P + "OnCommand", P + "ModeCommand___auto": P + "AutoCommand",
            P + "ModeCommand___off": P + "OffCommand", P + "ModeCommand___multiping": P + "MultiPingCommand"}
@@ -149,6 +153,33 @@ def app_files(general, icon, bundle, display):
     return files
 
 
+def relayout_profiles():
+    """{path: bytes} for every keypad profile whose Speedy Bot page differs from the current layout."""
+    out = {}
+    for path in glob.glob(os.path.join(DEVICE_DIR, "*", "Profiles", "*", "ProfileInfo.json")):
+        d = json.load(open(path, encoding="utf-8"))
+        changed = False
+        for mode in d["layout"]["layoutModes"]:
+            for ws in mode.get("workspaces") or []:
+                for page in ws.get("pressPages") or []:
+                    if page.get("displayName") != PAGE:
+                        continue
+                    if [c.get("pressAction") for c in page.get("controls") or []] == KEYS:
+                        continue
+                    t = (page.get("controls") or [{}])[0].get("$type", T_CONTROL)
+                    page["controls"] = [{"$type": t, "controlId": i, "pressAction": a, "rotateAction": None} for i, a in enumerate(KEYS)]
+                    changed = True
+        if changed:
+            names = d.get("additionalNativePluginNames") or []
+            if "SpeedyBot" not in names:
+                names.append("SpeedyBot")
+            d["additionalNativePluginNames"] = names
+            d["lastModifiedTimeUtc"] = now_utc()
+            out[path] = dump(d).encode()
+            print(f"Will lay out the Speedy Bot page in {os.path.relpath(path, DEVICE_DIR).split(os.sep)[0]}")
+    return out
+
+
 def migrated_profiles():
     """{path: bytes} for every keypad profile that still uses keys from an older plugin version."""
     out = {}
@@ -230,7 +261,7 @@ def main():
         apps.append((SB_BUNDLE, "Speedy Bot"))
     if "--app" in args:
         apps.append(tuple(value("--app", 2)))
-    wants_general = not apps and not removes and "--migrate" not in args or "--remove" in args
+    wants_general = not apps and not removes and "--migrate" not in args and "--relayout" not in args or "--remove" in args
     if (apps or wants_general) and "--remove" not in args and not os.path.isdir(os.path.join(ROOT, "Plugins", "SpeedyBot")):
         sys.exit("The Speedy Bot plugin is not installed. Run LogiPlugin/build.sh first.")
 
@@ -240,6 +271,10 @@ def main():
     if "--migrate" in args:
         writes.update(migrated_profiles())
         done.append("Pointed the older Speedy Bot keys at the current commands." if writes else "No keys needed updating.")
+    if "--relayout" in args:
+        laid = relayout_profiles()
+        writes.update(laid)
+        done.append(f"Laid out {len(laid)} Speedy Bot page(s) with the current keys." if laid else "Every Speedy Bot page already has the current keys.")
 
     for bundle, display in apps:
         if os.path.isdir(os.path.join(DEVICE_DIR, bundle.lower())):
