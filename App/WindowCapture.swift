@@ -58,16 +58,19 @@ final class WindowCaptureController {
     private var askedForScreenRecording = false
 
     /// The keypad's Capture key: the same as the shortcut.
-    func captureFromKey() {
-        guard state.screenConnectOpen else { Toast.show("No ScreenConnect session to capture", seconds: 2); return }
-        fire()
+    /// Whether a capture started.
+    @discardableResult
+    func captureFromKey() -> Bool {
+        guard state.screenConnectOpen else { Toast.show("No ScreenConnect session to capture", seconds: 2); return false }
+        return fire()
     }
 
-    private func fire() {
-        guard !capturing else { return }
+    @discardableResult
+    private func fire() -> Bool {
+        guard !capturing else { return false }
         guard let windowID = sessionWindow() else {
             Toast.show("No ScreenConnect session window to capture", seconds: 2.5)
-            return
+            return false
         }
         // This answer is fixed for as long as the app runs, even after the tech allows it in System Settings.
         // So ask once; after that, just try. The capture is done by a separate tool that gets the fresh answer.
@@ -75,7 +78,7 @@ final class WindowCaptureController {
             askedForScreenRecording = true
             CGRequestScreenCaptureAccess()   // shows the system prompt the first time
             Toast.show("Allow Speedy Bot under Privacy & Security > Screen Recording, then press the shortcut again", seconds: 5)
-            return
+            return false
         }
 
         // Where the picture goes follows the screenshot setting: a file in the tech's screenshot folder when
@@ -108,9 +111,11 @@ final class WindowCaptureController {
             try task.run()
             state.noteSessionCapture()
             SpeedyShared.log.notice("capturing the session window")
+            return true
         } catch {
             capturing = false
             Toast.show("Could not start the screenshot tool", seconds: 3)
+            return false
         }
     }
 
@@ -123,6 +128,7 @@ final class WindowCaptureController {
             }
         } else if status != 0 || file != nil {
             SpeedyShared.log.error("session window capture failed (status \(status))")
+            state.sessionCaptureFailed()
             Toast.show(CGPreflightScreenCaptureAccess()
                        ? "Could not capture the ScreenConnect window"
                        : "Could not capture. Allow Speedy Bot under Privacy & Security > Screen Recording, then quit and reopen Speedy Bot", seconds: 5)

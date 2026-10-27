@@ -191,6 +191,7 @@ final class AppState: ObservableObject {
         publishState()
         screenshot.onScreenshot = { [weak self] ref in self?.saveScreenshotIfWanted(ref) }
         apply()
+        screenshot.adoptLeftoverWake()
         // The Accessibility switch lives in System Settings; notice when the tech flips it.
         let t = Timer(timeInterval: 1.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.refreshPermission() }
@@ -272,17 +273,21 @@ final class AppState: ObservableObject {
     func keyAction(_ action: KeyAction) {
         SpeedyShared.log.notice("keypad: \(action.rawValue, privacy: .public)")
         let pasteKey = action == .paste || action == .pasteSend
-        // In Auto, just after a session closes, the screenshot still waiting can be pasted from the keypad too.
-        guard active || (pasteKey && lingering && armed) else {
+        // In Auto, just after a session closes, its last screenshot can still be pasted from the keypad.
+        guard active || (pasteKey && lingering && screenshot.hasShotFromSession(closedAt: sessionClosedAt)) else {
             Toast.show(mode == .off ? "Speedy Bot is off" : "Speedy Bot: Auto, waiting for a ScreenConnect session", seconds: 2)
             return
         }
         switch action {
-        case .type: typer.typeFromKey()
-        case .capture: capture.captureFromKey()
+        case .type:
+            screenshot.cancelKeyIntent("another key")
+            typer.typeFromKey()
+        case .capture:
+            screenshot.cancelKeyIntent("another key")
+            capture.captureFromKey()
         case .paste, .pasteSend:
             screenshot.pasteFromKey(send: action == .pasteSend, canCapture: active && screenConnectOpen) { [weak self] in
-                self?.capture.captureFromKey()
+                self?.capture.captureFromKey() ?? false
             }
         }
     }
@@ -367,6 +372,8 @@ final class AppState: ObservableObject {
 
     /// The capture shortcut was used: the screenshot that follows was taken from the session.
     func noteSessionCapture() { screenshot.noteSessionCapture() }
+    /// The capture of the session window did not produce a picture: a keypad paste waiting for it is dropped.
+    func sessionCaptureFailed() { screenshot.cancelKeyIntent("the capture failed") }
 
     /// Where screenshots are being looked for right now (nil when neither screenshot feature is running).
     var screenshotSource: ScreenshotSource? { screenshot.source }

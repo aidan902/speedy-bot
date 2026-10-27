@@ -89,6 +89,10 @@ public enum ChatSend {
             record[String(pid)] = Self.startTime(of: pid)
             UserDefaults.standard.set(record, forKey: Self.recordKey)
         }
+        /// Apps an earlier Speedy Bot switched the flag on for that are still running (the same processes).
+        func leftovers() -> [pid_t] {
+            Self.record().keys.compactMap { Int32($0) }.filter { wasOurs($0) }
+        }
         /// The flag on this app was switched on by an earlier Speedy Bot (same process, not a reused pid).
         func wasOurs(_ pid: pid_t) -> Bool {
             guard let started = Self.startTime(of: pid) else { return false }
@@ -153,6 +157,18 @@ public enum ChatSend {
             }
             AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
             woken.markOurs(pid)
+        }
+    }
+
+    /// At launch: a flag an earlier Speedy Bot left on (a crash, a Force Quit) is taken back as this one's, so the
+    /// usual release (nothing waiting, auto-send off, quitting) switches it off.
+    public static func adoptLeftovers() {
+        flagQueue.async {
+            for pid in woken.leftovers() {
+                let app = AXUIElementCreateApplication(pid)
+                AXUIElementSetMessagingTimeout(app, timeout)
+                if (attr(app, "AXEnhancedUserInterface") as? Bool) == true { woken.markOurs(pid) }
+            }
         }
     }
 

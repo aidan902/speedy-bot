@@ -280,7 +280,7 @@ def main():
     for flag in ("--remove-screenconnect", "--remove-speedybot", "--remove-app"):
         if flag in args:
             bundle = {"--remove-screenconnect": SC_BUNDLE, "--remove-speedybot": SB_BUNDLE}.get(flag) or args[flag][0]
-            d = os.path.join(DEVICE_DIR, bundle.lower())
+            d = os.path.normpath(os.path.join(DEVICE_DIR, bundle.lower()))
             if not bundle.strip(". /") or os.path.dirname(os.path.normpath(d)) != DEVICE_DIR or bundle.startswith("@"):
                 sys.exit(f"{bundle!r} is not an app's bundle id; nothing changed.")
             if not os.path.isdir(d):
