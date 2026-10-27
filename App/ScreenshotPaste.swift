@@ -1017,6 +1017,20 @@ final class ScreenshotPasteController {
         runSessionPaste(returnTo: deferred.returnTo, multi: deferred.multi)
     }
 
+    /// Why auto-send may not send into a message box that reads like this before its paste, or nil when it may:
+    /// "unreadable", or "draft" (text, pictures or files the tech put there). `ours`: what an auto-send still waiting
+    /// in that window left there (this paste joins it). A Send button means the box holds something; while an
+    /// answer runs the Send button is hidden, so any composer button beyond its fixed ones (an attachment's
+    /// "remove …") counts. The picture count is not used: ChatGPT shows a picture of its own near an empty box
+    /// (measured: 1 with nothing in it). `--check-chat` asks the same question of the box as it is now.
+    nonisolated static func sendBlocker(_ before: ComposerState, ours: (images: Int, extras: Int)?) -> String? {
+        guard let typed = before.typed else { return "unreadable" }
+        if !typed.isEmpty { return "draft" }
+        if let ours, before.images <= ours.images, before.extras <= ours.extras { return nil }
+        if (!before.streaming && before.sendButton != nil) || (before.streaming && before.extras > 0) { return "draft" }
+        return nil
+    }
+
     /// A paste from a session that is not handing over to a send: the session comes back to the front (after a
     /// moment for the picture to land), so the tech's next keys do not go into the chat app's message box.
     private func giveSessionBack(_ session: NSRunningApplication?, from chat: NSRunningApplication) {
@@ -1174,20 +1188,10 @@ final class ScreenshotPasteController {
                     before = settled
                 }
                 lookRelocations = composer.relocations
-                if before.typed == nil {
-                    notSentWhy = "unreadable"
-                } else if before.typed?.isEmpty == false {
-                    notSentWhy = "draft"
+                if let why = Self.sendBlocker(before, ours: ours.map { ($0.images, $0.extras) }) {
+                    notSentWhy = why
                 } else if self.droppedSomething(since: max(armed.at, lookStarted.addingTimeInterval(-1))) {
                     notSentWhy = "dropped"   // a drag just ended: what it dropped may not show in the box yet
-                } else if let ours, before.images <= ours.images, before.extras <= ours.extras {
-                    sendPlan = composer   // only our own pending screenshots are there: this one joins them
-                } else if (!before.streaming && before.sendButton != nil) || (before.streaming && before.extras > 0) {
-                    // Pictures or files already in the box. A Send button means the box holds something; while an
-                    // answer runs the Send button is hidden, so any composer button beyond its fixed ones (an
-                    // attachment's "remove …") counts. The picture count is not used here: ChatGPT shows a picture
-                    // of its own near an empty box (measured: 1 with nothing in it).
-                    notSentWhy = "draft"
                 } else {
                     sendPlan = composer
                 }

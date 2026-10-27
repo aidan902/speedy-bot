@@ -243,6 +243,16 @@ public final class Composer: @unchecked Sendable {
         }
     }
 
+    /// Experimental (--test-background-paste): makes this window the app's main window and the message box its
+    /// focused element through accessibility, without activating the app. Returns the two results.
+    public func focusQuietly() -> (main: AXError, focus: AXError) {
+        if textArea == nil { locate() }
+        guard let window = window(), let box = textArea else { return (.failure, .failure) }
+        let main = AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
+        let focus = AXUIElementSetAttributeValue(box, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        return (main, focus)
+    }
+
     /// Finds the message box: the focused text area of the window, else the last one (the box is at the bottom),
     /// and the composer around it (a few levels up).
     private func locate() {

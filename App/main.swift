@@ -304,6 +304,144 @@ if CommandLine.arguments.contains("--dump-chat") {
     exit(0)
 }
 
+/// ChatGPT (the app auto-send pastes into), its front window, and its message box once its tree is awake (up to
+/// `wait` seconds). For the diagnostics below; never brings ChatGPT forward.
+func chatGPTBox(wait: TimeInterval) -> (app: NSRunningApplication, window: CGWindowID, composer: Composer, state: ComposerState)? {
+    guard let app = NSWorkspace.shared.runningApplications.first(where: { PasteTarget.chatGPT.matches($0) }) else { return nil }
+    guard let window = WindowHitTest.frontWindow(ofPID: app.processIdentifier) else { return nil }
+    ChatSend.wakeAccessibility(pid: app.processIdentifier, takeOver: false)
+    let composer = Composer(pid: app.processIdentifier, windowID: window.windowID)
+    var state = composer.read()
+    let deadline = Date().addingTimeInterval(wait)
+    while state.text == nil, Date() < deadline {
+        Thread.sleep(forTimeInterval: 0.25)
+        state = composer.read()
+    }
+    return (app, window.windowID, composer, state)
+}
+
+func describe(_ s: ComposerState) -> String {
+    "box=\(s.text == nil ? "unreadable" : "\(s.typed?.count ?? 0) chars typed") streaming=\(s.streaming) send=\(s.sendEnabled.map { $0 ? "enabled" : "disabled" } ?? "none") pictures=\(s.images) extras=\(s.extras) buttons=[\(s.buttons.joined(separator: ", "))]"
+}
+
+// `--check-chat`: would auto-send send into ChatGPT's message box as it is right now? The same rule auto-send uses
+// (ScreenshotPasteController.sendBlocker), so a change in how ChatGPT draws its box shows up here, at install,
+// instead of as screenshots that quietly stop sending. Exit 0: would send; 1: would not; 2: no ChatGPT to look at.
+if CommandLine.arguments.contains("--check-chat") {
+    _ = NSApplication.shared
+    guard let chat = chatGPTBox(wait: 4) else {
+        print("check-chat: ChatGPT is not open (or has no window on this desktop); nothing to check")
+        ChatSend.releaseAccessibility(wait: true)
+        exit(2)
+    }
+    print("check-chat: \(describe(chat.state))")
+    let blocker = ScreenshotPasteController.sendBlocker(chat.state, ours: nil)
+    ChatSend.releaseAccessibility(wait: true)
+    if let blocker {
+        print(blocker == "unreadable"
+              ? "check-chat: WOULD NOT SEND: the message box could not be read"
+              : "check-chat: WOULD NOT SEND: the box reads as holding something (empty it in ChatGPT and check again; if it IS empty, ChatGPT has changed and auto-send needs a fix)")
+        exit(1)
+    }
+    print("check-chat: OK, auto-send would send into this box")
+    exit(0)
+}
+
+// `--test-background-paste`: try putting a test picture into ChatGPT's message box WITHOUT bringing ChatGPT forward:
+// first its own Edit > Paste menu item through accessibility, then Cmd+V posted to its process. Reports what the box
+// shows after each and whether ChatGPT came forward; removes the test picture again and puts the clipboard back.
+if CommandLine.arguments.contains("--test-background-paste") {
+    _ = NSApplication.shared
+    func attr(_ e: AXUIElement, _ name: String) -> AnyObject? {
+        var v: AnyObject?
+        return AXUIElementCopyAttributeValue(e, name as CFString, &v) == .success ? v : nil
+    }
+    func title(_ e: AXUIElement) -> String { (attr(e, kAXTitleAttribute) as? String) ?? "" }
+    func front() -> String { NSWorkspace.shared.frontmostApplication?.localizedName ?? "?" }
+    guard let chat = chatGPTBox(wait: 4), chat.state.text != nil else {
+        print("bg-paste: ChatGPT's message box could not be read (is ChatGPT open with a window on this desktop?)")
+        ChatSend.releaseAccessibility(wait: true)
+        exit(2)
+    }
+    let pid = chat.app.processIdentifier
+    if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
+        print("bg-paste: ChatGPT is the app in front; click another app first so the test means something")
+        ChatSend.releaseAccessibility(wait: true)
+        exit(2)
+    }
+    print("bg-paste: front app = \(front()); before: \(describe(chat.state))")
+    // A small test picture.
+    let image = NSImage(size: NSSize(width: 240, height: 90))
+    image.lockFocus()
+    NSColor.systemYellow.setFill(); NSRect(x: 0, y: 0, width: 240, height: 90).fill()
+    ("Speedy Bot test" as NSString).draw(at: NSPoint(x: 20, y: 35), withAttributes: [.font: NSFont.boldSystemFont(ofSize: 22)])
+    image.unlockFocus()
+    guard let tiff = image.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else { exit(3) }
+    let saved = ClipboardSwap.snapshot()
+    // A second, private type on the item: the running Speedy Bot does not take this for a screenshot (and send it).
+    NSPasteboard.general.clearContents()
+    let item = NSPasteboardItem()
+    item.setData(png, forType: .png)
+    item.setString("test", forType: NSPasteboard.PasteboardType("net.fm.speedybot.test"))
+    NSPasteboard.general.writeObjects([item])
+    func changed(_ s: ComposerState) -> Bool {
+        s.extras > chat.state.extras || s.images > chat.state.images || (s.sendButton != nil && chat.state.sendButton == nil)
+    }
+    func settle() -> ComposerState {
+        var s = chat.composer.read()
+        for _ in 0..<8 where !changed(s) { Thread.sleep(forTimeInterval: 0.25); s = chat.composer.read() }
+        return s
+    }
+    var worked: String?
+    // A: Edit > Paste through accessibility.
+    let appEl = AXUIElementCreateApplication(pid)
+    var pasteItem: AXUIElement?
+    if let bar = attr(appEl, kAXMenuBarAttribute).map({ $0 as! AXUIElement }),
+       let items = attr(bar, kAXChildrenAttribute) as? [AXUIElement],
+       let edit = items.first(where: { title($0) == "Edit" }),
+       let menu = (attr(edit, kAXChildrenAttribute) as? [AXUIElement])?.first,
+       let paste = (attr(menu, kAXChildrenAttribute) as? [AXUIElement])?.first(where: { title($0) == "Paste" }) {
+        pasteItem = paste
+        let err = AXUIElementPerformAction(paste, kAXPressAction as CFString)
+        let after = settle()
+        print("bg-paste A (Edit > Paste menu item): press=\(err.rawValue) front app now = \(front()); after: \(describe(after))")
+        if changed(after) { worked = "A" }
+    } else {
+        print("bg-paste A: could not find ChatGPT's Edit > Paste menu item")
+    }
+    // C: its window made main and its box focused through accessibility (no activation), then Edit > Paste.
+    if worked == nil, let paste = pasteItem {
+        let r = chat.composer.focusQuietly()
+        Thread.sleep(forTimeInterval: 0.3)
+        let err = AXUIElementPerformAction(paste, kAXPressAction as CFString)
+        let after = settle()
+        print("bg-paste C (window main + box focused, then Edit > Paste): main=\(r.main.rawValue) focus=\(r.focus.rawValue) press=\(err.rawValue) front app now = \(front()); after: \(describe(after))")
+        if changed(after) { worked = "C" }
+    }
+    // B: Cmd+V posted to ChatGPT's process only (after C has focused its box).
+    if worked == nil {
+        let src = CGEventSource(stateID: .privateState)
+        let v = LayoutKeyMap.keyCodeWithCommand(for: "v") ?? 9
+        let down = CGEvent(keyboardEventSource: src, virtualKey: v, keyDown: true)
+        let up = CGEvent(keyboardEventSource: src, virtualKey: v, keyDown: false)
+        down?.flags = .maskCommand; up?.flags = .maskCommand
+        down?.postToPid(pid); up?.postToPid(pid)
+        let after = settle()
+        print("bg-paste B (Cmd+V posted to ChatGPT's process): front app now = \(front()); after: \(describe(after))")
+        if changed(after) { worked = "B" }
+    }
+    // Clean up: take the test picture out again, and give the clipboard back.
+    Thread.sleep(forTimeInterval: 1.0)
+    if worked != nil {
+        let now = chat.composer.read()
+        print("bg-paste: test picture in the box; its remove button: \(now.buttons.filter { $0.hasPrefix("remove") })")
+    }
+    if let saved { ClipboardSwap.restore(saved) }
+    ChatSend.releaseAccessibility(wait: true)
+    print(worked.map { "bg-paste: RESULT: method \($0) put the picture in with ChatGPT in the background" } ?? "bg-paste: RESULT: neither method pasted with ChatGPT in the background")
+    exit(worked == nil ? 1 : 0)
+}
+
 // `--restore-screenshot-settings`: put the screenshot settings back without starting the app (used by uninstall).
 if CommandLine.arguments.contains("--restore-screenshot-settings") {
     ScreencapturePrefs.restore()
