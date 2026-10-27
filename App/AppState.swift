@@ -40,7 +40,7 @@ final class AppState: ObservableObject {
     /// session goes away, the screenshot features stay up while a screenshot is waiting (and for a few seconds
     /// regardless, because the corner preview can still be holding the last one back).
     private var lingering: Bool {
-        mode == .auto && !screenConnectOpen && (armed || screenshot.keyPasteWaiting || Date().timeIntervalSince(sessionClosedAt) < 12)
+        mode == .auto && !screenConnectOpen && (armed || Date().timeIntervalSince(sessionClosedAt) < 12)
     }
     /// Not switched off (the options are usable). Whether anything is actually running is `active`.
     var masterEnabled: Bool { mode != .off }
