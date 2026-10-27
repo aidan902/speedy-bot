@@ -510,7 +510,7 @@ final class ScreenshotPasteController {
     /// A keypad paste whose screenshot came after the press: only if the app in front then still is (never pulling
     /// the chat app over some other app the tech has moved on to).
     private func runKeyPasteIfStillThere(send: Bool, armed: Armed, pressedAt: Date, frontPID: pid_t?) {
-        if frontPID == nil || NSWorkspace.shared.frontmostApplication?.processIdentifier == frontPID {
+        if frontPID == nil || Date().timeIntervalSince(pressedAt) < 2 || NSWorkspace.shared.frontmostApplication?.processIdentifier == frontPID {
             runKeyPaste(send: send, armed: armed, pressedAt: pressedAt)
         } else {
             SpeedyShared.log.notice("keypad: the tech moved on before the screenshot arrived; left ready to paste")
@@ -1182,9 +1182,11 @@ final class ScreenshotPasteController {
                     notSentWhy = "dropped"   // a drag just ended: what it dropped may not show in the box yet
                 } else if let ours, before.images <= ours.images, before.extras <= ours.extras {
                     sendPlan = composer   // only our own pending screenshots are there: this one joins them
-                } else if before.images > 0 || (!before.streaming && before.sendButton != nil) || (before.streaming && before.extras > 0) {
+                } else if (!before.streaming && before.sendButton != nil) || (before.streaming && before.extras > 0) {
                     // Pictures or files already in the box. A Send button means the box holds something; while an
-                    // answer runs the Send button is hidden, so any composer button beyond its fixed ones counts.
+                    // answer runs the Send button is hidden, so any composer button beyond its fixed ones (an
+                    // attachment's "remove …") counts. The picture count is not used here: ChatGPT shows a picture
+                    // of its own near an empty box (measured: 1 with nothing in it).
                     notSentWhy = "draft"
                 } else {
                     sendPlan = composer
