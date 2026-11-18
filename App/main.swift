@@ -1,4 +1,5 @@
 import AppKit
+import Vision
 import SwiftUI
 
 @MainActor
@@ -295,7 +296,7 @@ if CommandLine.arguments.contains("--dump-chat") {
     for app in apps {
         let pid = app.processIdentifier
         print("== \(app.localizedName ?? "?") [\(app.bundleIdentifier ?? "?")] awake=\(ChatSend.isAwake(pid: pid))")
-        if PasteTarget.chatGPT.matches(app) {
+        if PasteTarget.allCases.contains(where: { $0.needsAccessibilityWake && $0.matches(app) }) {
             ChatSend.wakeAccessibility(pid: pid, takeOver: false)
             for i in 1...8 where !ChatSend.isAwake(pid: pid) {
                 Thread.sleep(forTimeInterval: 0.5)
@@ -329,6 +330,102 @@ func chatGPTBox(wait: TimeInterval) -> (app: NSRunningApplication, window: CGWin
 
 func describe(_ s: ComposerState) -> String {
     "box=\(s.text == nil ? "unreadable" : "\(s.typed?.count ?? 0) chars typed") streaming=\(s.streaming) send=\(s.sendEnabled.map { $0 ? "enabled" : "disabled" } ?? "none") pictures=\(s.images) extras=\(s.extras) buttons=[\(s.buttons.joined(separator: ", "))]"
+}
+
+/// The CGWindowID behind an accessibility window (for the probe below).
+@_silgen_name("_AXUIElementGetWindow")
+private func probeWindowID(_ element: AXUIElement, _ windowID: UnsafeMutablePointer<CGWindowID>) -> AXError
+
+// `--ax-probe BUNDLE_ID`: what accessibility shows of an app (its windows, the two "expose yourself" switches, and the
+// roles in its front window), before and after asking it to show everything. For working out a chat app that cannot
+// be read. Prints roles, labels and sizes only, never text.
+if let i = CommandLine.arguments.firstIndex(of: "--ax-probe"), CommandLine.arguments.count > i + 1 {
+    _ = NSApplication.shared
+    let bid = CommandLine.arguments[i + 1]
+    func attr(_ e: AXUIElement, _ name: String) -> AnyObject? {
+        var v: AnyObject?
+        return AXUIElementCopyAttributeValue(e, name as CFString, &v) == .success ? v : nil
+    }
+    guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == bid }) else { print("probe: \(bid) not running"); exit(2) }
+    let el = AXUIElementCreateApplication(app.processIdentifier)
+    func show(_ when: String) {
+        let windows = attr(el, kAXWindowsAttribute) as? [AXUIElement] ?? []
+        print("probe \(when): pid=\(app.processIdentifier) enhanced=\(String(describing: attr(el, "AXEnhancedUserInterface"))) manual=\(String(describing: attr(el, "AXManualAccessibility"))) windows=\(windows.count)")
+        for w in windows {
+            var id: CGWindowID = 0
+            _ = probeWindowID(w, &id)
+            var counts: [String: Int] = [:]
+            var labels: [String] = []
+            var queue = [w]; var seen = 0
+            while !queue.isEmpty, seen < 20000 {
+                let e = queue.removeFirst(); seen += 1
+                let role = attr(e, kAXRoleAttribute) as? String ?? "?"
+                counts[role, default: 0] += 1
+                if role == "AXButton", labels.count < 40 {
+                    let l = (attr(e, kAXDescriptionAttribute) as? String) ?? (attr(e, kAXTitleAttribute) as? String) ?? ""
+                    if !l.isEmpty { labels.append(l) }
+                }
+                if role == "AXTextArea" || role == "AXTextField" {
+                    let focused = (attr(e, kAXFocusedAttribute) as? Bool) == true
+                    let len = (attr(e, kAXValueAttribute) as? String)?.count ?? -1
+                    print("   text element: \(role) focused=\(focused) valueLength=\(len) desc=\((attr(e, kAXDescriptionAttribute) as? String) ?? "")")
+                }
+                if let kids = attr(e, kAXChildrenAttribute) as? [AXUIElement] { queue.append(contentsOf: kids) }
+            }
+            let top = counts.sorted { $0.value > $1.value }.prefix(12).map { "\($0.key)=\($0.value)" }.joined(separator: " ")
+            print("  window \(id) title?=\((attr(w, kAXTitleAttribute) as? String)?.isEmpty == false) elements=\(seen): \(top)")
+            print("   buttons: \(labels.joined(separator: " | "))")
+        }
+    }
+    show("before")
+    let manual = AXUIElementSetAttributeValue(el, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+    let enhanced = AXUIElementSetAttributeValue(el, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+    print("probe: set manual=\(manual.rawValue) enhanced=\(enhanced.rawValue)")
+    func size() -> Int {
+        guard let w = (attr(el, kAXWindowsAttribute) as? [AXUIElement])?.first else { return 0 }
+        var queue = [w]; var seen = 0
+        while !queue.isEmpty, seen < 400 {
+            let e = queue.removeFirst(); seen += 1
+            if let kids = attr(e, kAXChildrenAttribute) as? [AXUIElement] { queue.append(contentsOf: kids) }
+        }
+        return seen
+    }
+    for t in 1...20 {
+        Thread.sleep(forTimeInterval: 0.5)
+        let focused = attr(el, kAXFocusedUIElementAttribute).map { attr($0 as! AXUIElement, kAXRoleAttribute) as? String ?? "?" } ?? "none"
+        print("  t+\(Double(t) / 2)s: elements=\(size()) focused=\(focused) manual=\(String(describing: attr(el, "AXManualAccessibility")))")
+        if size() > 60 { break }
+    }
+    show("after")
+    AXUIElementSetAttributeValue(el, "AXManualAccessibility" as CFString, kCFBooleanFalse)
+    AXUIElementSetAttributeValue(el, "AXEnhancedUserInterface" as CFString, kCFBooleanFalse)
+    exit(0)
+}
+
+// `--ocr-bottom WINDOW_ID [FRACTION]`: the text in the bottom part of a window (default the lowest quarter), with where
+// each line sits (x, y from the bottom, width, as fractions of the window). For working out a chat app's message box
+// when accessibility cannot see it. Only that strip is read.
+if let i = CommandLine.arguments.firstIndex(of: "--ocr-bottom"), CommandLine.arguments.count > i + 1, let wid = UInt32(CommandLine.arguments[i + 1]) {
+    let fraction = CommandLine.arguments.count > i + 2 ? Double(CommandLine.arguments[i + 2]) ?? 0.25 : 0.25
+    let path = NSTemporaryDirectory() + "speedybot-ocr-\(getpid()).png"
+    let task = Process()
+    task.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+    task.arguments = ["-x", "-o", "-l", String(wid), path]
+    try? task.run(); task.waitUntilExit()
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    guard let image = NSImage(contentsOfFile: path), let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { print("ocr: capture failed"); exit(1) }
+    let request = VNRecognizeTextRequest()
+    request.recognitionLevel = .accurate
+    request.regionOfInterest = CGRect(x: 0, y: 0, width: 1, height: fraction)
+    try? VNImageRequestHandler(cgImage: cg, options: [:]).perform([request])
+    print("ocr: window \(wid) \(cg.width)x\(cg.height), bottom \(Int(fraction * 100))%")
+    for r in request.results ?? [] {
+        guard let text = r.topCandidates(1).first?.string else { continue }
+        // Bounding boxes come back in the region's own coordinates: back to the whole window.
+        let b = r.boundingBox
+        print(String(format: "  x=%.2f y=%.3f w=%.2f  %@", b.minX, b.minY * fraction, b.width, text))
+    }
+    exit(0)
 }
 
 // `--check-chat`: would auto-send send into ChatGPT's message box as it is right now? The same rule auto-send uses

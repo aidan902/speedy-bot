@@ -1,4 +1,5 @@
 import AppKit
+import os
 
 /// Where a screenshot turned up.
 enum ScreenshotRef: Equatable {
@@ -27,12 +28,16 @@ enum PasteTarget: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Only ChatGPT is known to route a paste made anywhere in its window to the message box; there its search and
-    /// rename fields are the places a picture must not go. The others get a plain Cmd+V wherever the cursor is.
-    var refusesOtherTextFields: Bool { self == .chatGPT }
+    /// ChatGPT, and any app that declares itself a target (see `declaredTarget`), route a paste made anywhere in the
+    /// window to the message box; there their search and rename fields are the places a picture must not go. The
+    /// others get a plain Cmd+V wherever the cursor is.
+    func refusesOtherTextFields(in app: NSRunningApplication) -> Bool {
+        self == .chatGPT || Self.declaredTarget(of: app) == self
+    }
 
     func matches(_ app: NSRunningApplication) -> Bool {
         let bid = app.bundleIdentifier ?? ""
+        if Self.declaredTarget(of: app) == self { return true }
         switch self {
         case .chatGPT:
             // The current app and Codex.app share the bundle id com.openai.codex, so the name is checked as well;
@@ -45,6 +50,28 @@ enum PasteTarget: String, CaseIterable, Identifiable {
             return ["ai.x.grok", "com.x.grok", "com.xai.grok"].contains(bid) || (bid.lowercased().contains("grok") && app.localizedName == "Grok")
         }
     }
+
+    /// A chat app can opt in by putting `SBChatTarget` (`chatGPT`, `claude` or `grok`) in its Info.plist: it then
+    /// counts as that target. Such an app promises that Cmd+V with a picture anywhere in its window attaches the
+    /// picture to its message box. Read once per running app (this is asked on every pointer tick).
+    static func declaredTarget(of app: NSRunningApplication) -> PasteTarget? {
+        let pid = app.processIdentifier
+        let launch = app.launchDate
+        if let known = declaredCache.withLock({ $0[pid] }), known.launch == launch { return known.target }
+        let raw = app.bundleURL.flatMap { Bundle(url: $0)?.object(forInfoDictionaryKey: "SBChatTarget") as? String }
+        let target = raw.flatMap { PasteTarget(rawValue: $0) }
+        declaredCache.withLock { cache in
+            if cache.count > 200 { cache.removeAll() }
+            cache[pid] = (launch, target)
+        }
+        return target
+    }
+
+    private static let declaredCache = OSAllocatedUnfairLock(initialState: [pid_t: (launch: Date?, target: PasteTarget?)]())
+
+    /// Built on Chromium (ChatGPT, Claude): the app shows accessibility only its window frame until an assistive
+    /// app asks for the rest (ChatSend.wakeAccessibility), so auto-send can read its message box only after that.
+    var needsAccessibilityWake: Bool { self == .chatGPT || self == .claude }
 
     static func matching(_ app: NSRunningApplication, in targets: Set<PasteTarget>) -> PasteTarget? {
         targets.first { $0.matches(app) }
@@ -244,7 +271,8 @@ final class ScreenshotPasteController {
             // ChatGPT opened (or reopened by its own update) after Speedy Bot: wake it once it is up.
             launchObserver = NSWorkspace.shared.notificationCenter.addObserver(
                 forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main) { [weak self] note in
-                guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication, PasteTarget.chatGPT.matches(app) else { return }
+                guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                      PasteTarget.allCases.contains(where: { $0.needsAccessibilityWake && $0.matches(app) }) else { return }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 4) { MainActor.assumeIsolated { self?.primeChatApps() } }
             }
         }
@@ -524,8 +552,8 @@ final class ScreenshotPasteController {
 
     /// Reading the message box needs ChatGPT's tree, which is only kept up ahead of time while auto-send is on.
     private func wakeForKey(send: Bool) {
-        guard send, targets.contains(.chatGPT) else { return }
-        for app in NSWorkspace.shared.runningApplications where PasteTarget.chatGPT.matches(app) {
+        guard send else { return }
+        for app in NSWorkspace.shared.runningApplications where PasteTarget.matching(app, in: targets)?.needsAccessibilityWake == true {
             ChatSend.wakeAccessibility(pid: app.processIdentifier)
         }
     }
@@ -986,11 +1014,11 @@ final class ScreenshotPasteController {
             .map { CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: $0) }.min() ?? .infinity
     }
 
-    /// Has ChatGPT build its accessibility tree ahead of time, so an auto-send can read its message box straight
-    /// away. Never brings the app forward. Only ChatGPT needs (and gets) this, and only while auto-send is running.
+    /// Has ChatGPT and Claude build their accessibility trees ahead of time, so an auto-send can read the message box
+    /// straight away. Never brings the app forward. Only those two need (and get) this, and only while auto-send runs.
     func primeChatApps() {
-        guard autoSendFromSession, pasteEnabled, source != nil, targets.contains(.chatGPT) else { return }
-        for app in NSWorkspace.shared.runningApplications where PasteTarget.chatGPT.matches(app) {
+        guard autoSendFromSession, pasteEnabled, source != nil, targets.contains(where: \.needsAccessibilityWake) else { return }
+        for app in NSWorkspace.shared.runningApplications where PasteTarget.matching(app, in: targets)?.needsAccessibilityWake == true {
             ChatSend.wakeAccessibility(pid: app.processIdentifier)
         }
     }
@@ -1005,13 +1033,13 @@ final class ScreenshotPasteController {
     /// Auto-send is off or Speedy Bot is stopping: ChatGPT no longer needs its tree kept up for us.
     private func releaseChatApps() { ChatSend.releaseAccessibility() }
 
-    /// ChatGPT's flag goes off once nothing is waiting to send and auto-send cannot run (stopped, paste off,
+    /// The chat apps' flag goes off once nothing is waiting to send and auto-send cannot run (stopped, paste off,
     /// auto-send off, or ChatGPT not among the chat apps).
     private func releaseIfIdle() {
         // A paste under way, or one the keypad has asked for, may still need to read the message box.
         let keyWaiting = keyIntent.map { keyIntentLive($0) } ?? false
         guard pendingSends.isEmpty, !pasting, !keyWaiting else { return }
-        if source == nil || !pasteEnabled || !autoSendFromSession || !targets.contains(.chatGPT) { releaseChatApps() }
+        if source == nil || !pasteEnabled || !autoSendFromSession || !targets.contains(where: \.needsAccessibilityWake) { releaseChatApps() }
     }
 
     /// The paste `generation` is finished (or abandoned): a session screenshot that came in meanwhile goes now,
@@ -1181,11 +1209,16 @@ final class ScreenshotPasteController {
             var sendPlan: Composer?
             var notSentWhy = ""
             var lookRelocations = 0
+            // Claude's message box cannot be read any more (its app stopped showing its contents to accessibility,
+            // Nov 2026; even Electron's own switch is ignored). There auto-send pastes and presses Return, as the
+            // tech chose: whatever is in Claude's box goes with it, and the send cannot be confirmed.
+            let blindTarget = PasteTarget.matching(app, in: self.targets) == .claude
+            var blindReturn = false
             if thenSend {
                 let composer = Composer(pid: app.processIdentifier, windowID: windowID)
                 let lookStarted = Date()
                 var before = await Task.detached { () -> ComposerState in
-                    let deadline = Date().addingTimeInterval(3)
+                    let deadline = Date().addingTimeInterval(blindTarget ? 0 : 3)   // Claude: one look, it stays unreadable
                     var s = composer.read()
                     while s.text == nil, Date() < deadline {
                         try? await Task.sleep(for: .milliseconds(250))
@@ -1213,14 +1246,16 @@ final class ScreenshotPasteController {
                     before = settled
                 }
                 lookRelocations = composer.relocations
-                if let why = Self.sendBlocker(before, ours: ours.map { ($0.images, $0.extras) }) {
+                if let why = Self.sendBlocker(before, ours: ours.map { ($0.images, $0.extras) }), !(why == "unreadable" && blindTarget) {
                     notSentWhy = why
                 } else if self.droppedSomething(since: max(armed.at, lookStarted.addingTimeInterval(-1))) {
                     notSentWhy = "dropped"   // a drag just ended: what it dropped may not show in the box yet
+                } else if before.text == nil && blindTarget {
+                    blindReturn = true
                 } else {
                     sendPlan = composer
                 }
-                SpeedyShared.log.notice("auto-send: before the paste: \(sendPlan != nil ? (ours != nil ? "joining the pending send" : "box clear") : notSentWhy, privacy: .public), streaming=\(before.streaming), pictures=\(before.images), extras=\(before.extras), composer=[\(before.buttons.joined(separator: ", "), privacy: .public)]")
+                SpeedyShared.log.notice("auto-send: before the paste: \(blindReturn ? "unreadable (Claude): paste and Return" : sendPlan != nil ? (ours != nil ? "joining the pending send" : "box clear") : notSentWhy, privacy: .public), streaming=\(before.streaming), pictures=\(before.images), extras=\(before.extras), composer=[\(before.buttons.joined(separator: ", "), privacy: .public)]")
                 // A slow look (the tree was still waking) or the wait for our own screenshot: the tech must still be
                 // where the screenshot was taken, and (unless a key was just pressed for this) not have started
                 // anything since the quiet moment above.
@@ -1243,7 +1278,7 @@ final class ScreenshotPasteController {
             // window; its search and rename fields are the places a picture must not go.
             let result = await Paster.paste(
                 into: app, window: window, expectedChangeCount: expected,
-                refuseOtherTextFields: PasteTarget.matching(app, in: self.targets)?.refusesOtherTextFields ?? false,
+                refuseOtherTextFields: PasteTarget.matching(app, in: self.targets)?.refusesOtherTextFields(in: app) ?? false,
                 stillOnTarget: {
                     // From a session: no key, click or drag since the quiet moment (it would have gone into the chat
                     // app). By hover: the pointer still on the window.
@@ -1280,7 +1315,9 @@ final class ScreenshotPasteController {
                 && self.deferredAutoSend.map { $0.armedID == self.armed?.id && !$0.multi } == true
             if joinedByNext { SpeedyShared.log.notice("auto-send: a newer session screenshot came in; it will join this send") }
             guard !superseded || joinedByNext else {
-                if result == .pasted, thenSend {
+                if result == .pasted, thenSend, blindReturn, self.deferredAutoSend != nil {
+                    // Claude: the next screenshot's Return sends this one with it (it sends the whole box).
+                } else if result == .pasted, thenSend {
                     self.pendingSends[windowID] = nil
                     Toast.show("Screenshot pasted into \(name), not sent: another one came in. Send them from \(name)", seconds: 3.5)
                 } else if result == .clipboardChanged, thenSend {
@@ -1296,6 +1333,24 @@ final class ScreenshotPasteController {
             switch result {
             case .pasted where thenSend:
                 if !superseded { self.disarm("pasted") }   // never the newer screenshot, which is still to go
+                if blindReturn {
+                    // Claude: give the picture a moment to attach, then press Return, as long as Claude is still in
+                    // front and the tech has not pressed a key or clicked since the paste (that would be theirs).
+                    let pastedAt = Date()
+                    try? await Task.sleep(for: .milliseconds(700))
+                    if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier,
+                       !Self.input(since: pastedAt), !TextTyper.physicalModifiersDown(), stillWanted() {
+                        Paster.postReturn()
+                        SpeedyShared.log.notice("auto-send: Return pressed in \(name, privacy: .public) (its message box cannot be read)")
+                        Toast.show("Screenshot sent to \(name)", seconds: 1.4)
+                        if keyPressedAt == nil { self.recentSessionSend = (Date(), -1, true) }
+                    } else {
+                        SpeedyShared.log.notice("auto-send: \(name, privacy: .public) left in the paste (the tech was busy, or it was switched off)")
+                        Toast.show("Screenshot pasted into \(name), not sent. Press Return in \(name) to send it", seconds: 3.5)
+                    }
+                    if let returnTo, !returnTo.isTerminated { Paster.bringBack(returnTo) }
+                    break
+                }
                 guard let composer = sendPlan else {
                     // Left in the chat app for the tech to finish: no jump back, no send.
                     Toast.show(earlierWaiting ? "Screenshot pasted into \(name), not sent, with the one before it. Send them from \(name)"

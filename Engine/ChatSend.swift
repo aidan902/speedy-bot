@@ -139,7 +139,7 @@ public enum ChatSend {
     /// Wakes and releases run on this one queue, in the order they were asked for.
     private static let flagQueue = DispatchQueue(label: "net.fm.speedybot.ax-flag")
 
-    /// Asks ChatGPT (Chromium-based) to build its accessibility tree WITHOUT bringing it forward. It shows only its
+    /// Asks ChatGPT or Claude (Chromium-based) to build its accessibility tree WITHOUT bringing it forward. It shows only its
     /// window frame to accessibility until an assistive app asks, and the request it answers is the flag VoiceOver
     /// sets, AXEnhancedUserInterface (it ignores AXManualAccessibility). Measured: the message box appears about
     /// 2.5 s later and stays readable with the app in the background. Left alone when the flag is already on
@@ -150,12 +150,17 @@ public enum ChatSend {
             guard woken.claim(pid, interval: 30) else { return }
             let app = AXUIElementCreateApplication(pid)
             AXUIElementSetMessagingTimeout(app, timeout)
-            if (attr(app, "AXEnhancedUserInterface") as? Bool) == true {
+            if (attr(app, "AXEnhancedUserInterface") as? Bool) == true || (attr(app, "AXManualAccessibility") as? Bool) == true {
                 // Already on: ours to switch off later only if an earlier Speedy Bot switched it on.
                 if takeOver, woken.wasOurs(pid) { woken.markOurs(pid) }
                 return
             }
-            AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+            // Electron apps (Claude) answer the switch Electron documents for this, AXManualAccessibility; ChatGPT
+            // refuses that one and answers the flag VoiceOver sets. The VoiceOver flag also changes how some apps
+            // animate their windows, so it is only set where the Electron switch is refused.
+            if AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue) != .success {
+                AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+            }
             woken.markOurs(pid)
         }
     }
@@ -179,6 +184,7 @@ public enum ChatSend {
             for pid in woken.takeOurs() {
                 let app = AXUIElementCreateApplication(pid)
                 AXUIElementSetMessagingTimeout(app, timeout)
+                AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanFalse)
                 AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanFalse)
             }
         }

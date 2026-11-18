@@ -136,6 +136,16 @@ public enum Paster {
         up?.post(tap: .cgSessionEventTap)
     }
 
+    /// A plain Return keystroke (the Send of a chat app whose button cannot be reached), posted like `postCommandV`.
+    public static func postReturn() {
+        let src = TextTyper.makeSource()
+        let down = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_Return), keyDown: true)
+        let up = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_Return), keyDown: false)
+        down?.flags = []; up?.flags = []
+        down?.post(tap: .cgSessionEventTap)
+        up?.post(tap: .cgSessionEventTap)
+    }
+
     /// Full sequence. `expectedChangeCount` is the pasteboard changeCount captured when the screenshot was
     /// detected: if anything else has been copied since, nothing is pasted.
     /// `refuseOtherTextFields`: when the target's keyboard focus sits in a single-line field (search box, rename

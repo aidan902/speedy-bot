@@ -184,7 +184,7 @@ private struct PermissionRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             ZStack {
-                Circle().fill(granted ? Color.controlBlue : Color.primary.opacity(0.04))
+                Circle().fill(granted ? Color.controlOn : Color.primary.opacity(0.04))
                 if !granted { Circle().strokeBorder(Color.secondary.opacity(0.6), lineWidth: 1.5) }
                 Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).foregroundStyle(.white).opacity(granted ? 1 : 0)
             }

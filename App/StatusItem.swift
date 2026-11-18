@@ -105,7 +105,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         let rect = NSRect(x: 0, y: 0, width: size, height: size)
         let circle = NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1))
         if on {
-            NSColor(red: 0.04, green: 0.52, blue: 1.0, alpha: 1).setFill()   // system blue
+            NSColor(red: 0.11, green: 0.72, blue: 0.33, alpha: 1).setFill()   // the app's green (Color.controlOn)
             circle.fill()
             let tick = NSBezierPath()
             tick.lineWidth = 2.2

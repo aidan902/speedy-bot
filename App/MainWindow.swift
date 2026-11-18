@@ -5,11 +5,12 @@ extension Color {
     /// FM brand green, and the deep green it is paired with.
     static let fmGreen = Color(red: 0x2D / 255, green: 0xD4 / 255, blue: 0x64 / 255)
     static let fmDeep = Color(red: 0x00 / 255, green: 0x4D / 255, blue: 0x19 / 255)
-    /// The blue of a switched-on control in Control Center.
-    static let controlBlue = Color(nsColor: .systemBlue)
+    /// A switched-on control: the green of the app icon, between its light top (FM green) and deep bottom, so a white
+    /// symbol on it stays readable.
+    static let controlOn = Color(red: 0.11, green: 0.72, blue: 0.33)
 }
 
-/// A round icon that is the switch: blue with a white symbol when on, grey when off (the Control Center look).
+/// A round icon that is the switch: green with a white symbol when on, grey when off (the Control Center look).
 struct RoundToggle: View {
     let symbol: String
     let label: String
@@ -21,7 +22,7 @@ struct RoundToggle: View {
     var body: some View {
         Button { isOn.toggle() } label: {
             ZStack {
-                Circle().fill(isOn ? Color.controlBlue : Color.primary.opacity(emptyWhenOff ? 0.04 : 0.12))
+                Circle().fill(isOn ? Color.controlOn : Color.primary.opacity(emptyWhenOff ? 0.04 : 0.12))
                 if emptyWhenOff && !isOn { Circle().strokeBorder(Color.secondary.opacity(0.6), lineWidth: 1.5) }
                 Image(systemName: symbol)
                     .font(.system(size: size * 0.46, weight: .semibold))
