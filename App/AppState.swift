@@ -80,8 +80,7 @@ final class AppState: ObservableObject {
     @Published private(set) var captureShortcut: HotKeySpec?
     /// A screenshot taken while in a ScreenConnect session is pasted into the chat and sent straight away.
     @Published var autoSendFromSession: Bool { didSet { changed(SpeedyShared.autoSendFromSessionKey, autoSendFromSession) } }
-    /// Auto MCP: a screenshot goes to whichever chat app (ChatGPT, Claude, Grok) the pointer was last over, instead
-    /// of only the ticked ones.
+    /// Auto MCP: a screenshot goes to whichever of the ticked chat apps the pointer was last over.
     @Published var autoMCP: Bool { didSet { changed(SpeedyShared.autoMCPKey, autoMCP) } }
     /// Window captures (⇧⌘2) go straight into the MCP's message box, not sent, so several can go in one message.
     @Published var multiCapture: Bool { didSet { changed(SpeedyShared.multiCaptureKey, multiCapture) } }
@@ -284,7 +283,7 @@ final class AppState: ObservableObject {
             return
         case .autoMCP:
             autoMCP.toggle()
-            Toast.show(autoMCP ? "Auto MCP on: screenshots go to the chat app the pointer was last over"
+            Toast.show(autoMCP ? "Auto MCP on: screenshots go to whichever of \(pasteTargetNames) the pointer was last over"
                                : "Auto MCP off: screenshots go to \(pasteTargetNames)", seconds: 2.2)
             return
         case .ticket:
@@ -367,7 +366,7 @@ final class AppState: ObservableObject {
 
     private func apply() {
         screenshot.trigger = pasteTrigger
-        screenshot.targets = autoMCP ? Set(PasteTarget.allCases) : pasteTargets
+        screenshot.targets = pasteTargets
         screenshot.autoMCP = autoMCP
         screenshot.autoSendFromSession = autoSendFromSession
         screenshot.multiCapture = multiCapture

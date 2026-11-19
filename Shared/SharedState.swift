@@ -23,7 +23,7 @@ enum SpeedyShared {
     static let pasteTargetsKey = "pasteTargets"
     /// A screenshot taken while in a ScreenConnect session is pasted into the chat and sent, with no trigger.
     static let autoSendFromSessionKey = "autoSendFromSession"
-    /// Auto MCP: a screenshot goes to whichever chat app (ChatGPT, Claude, Grok) the pointer was last over.
+    /// Auto MCP: a screenshot goes to whichever of the ticked chat apps the pointer was last over.
     static let autoMCPKey = "autoMCP"
     /// Window captures go into the MCP's message box without being sent, so several can be gathered.
     static let multiCaptureKey = "multiCapture"

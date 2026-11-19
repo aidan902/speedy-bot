@@ -33,6 +33,13 @@ codesign --verify --strict "$DEST"
 "$LSREGISTER" -f "$DEST" 2>/dev/null || true
 open -g -a "$DEST" "speedybot://start"   # this copy, not whichever one was registered last (the build folder)
 for _ in $(seq 1 25); do pgrep -f "^$DEST/Contents/MacOS/Speedy Bot$" >/dev/null && break; sleep 0.2; done
+# Then until it has finished starting (it writes its state file), so the check below starts after it.
+STATE="$HOME/Library/Application Support/Speedy Bot/state.json"
+pid="$(pgrep -f "^$DEST/Contents/MacOS/Speedy Bot$" | head -1 || true)"
+for _ in $(seq 1 25); do
+  [ -n "$pid" ] && grep -q "\"pid\":$pid," "$STATE" 2>/dev/null && grep -q '"running":true' "$STATE" 2>/dev/null && break
+  sleep 0.2
+done
 running="$(pgrep -fl "Speedy Bot.app/Contents/MacOS/Speedy Bot$" || true)"
 case "$running" in
   *"$DEST/Contents/MacOS/Speedy Bot"*) ;;

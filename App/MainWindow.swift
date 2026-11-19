@@ -130,7 +130,7 @@ struct MainView: View {
                 Image(systemName: "hare.fill").font(.system(size: 21, weight: .semibold)).foregroundStyle(.white)
             }
             .frame(width: 44, height: 44)
-            .saturation(state.active ? 1 : 0)
+            .saturation(state.mode == .off ? 0 : 1)   // green unless Speedy Bot is Off
             VStack(alignment: .leading, spacing: 1) {
                 Text("Speedy Bot").font(.title2.weight(.semibold))
                 Text(statusText).font(.callout).foregroundStyle(state.active ? Color.fmGreen : Color.secondary)
@@ -189,7 +189,6 @@ struct MainView: View {
                         Text(target.title).lineLimit(1).fixedSize()
                     }
                 }
-                .disabled(state.autoMCP)
                 Spacer(minLength: 0)
             }
             HStack(spacing: 8) {
@@ -198,7 +197,7 @@ struct MainView: View {
                 Spacer(minLength: 0)
             }
             if state.autoMCP {
-                Text("ChatGPT, Claude and Grok all count: a screenshot goes to whichever of them the pointer was last over.")
+                Text("A screenshot goes to whichever of the ticked apps (\(state.pasteTargetNames)) the pointer was last over.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             HStack {
@@ -360,7 +359,7 @@ private struct Sidebar: View {
                     Image(systemName: "hare.fill").font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
                 }
                 .frame(width: 26, height: 26)
-                .saturation(state.active ? 1 : 0)
+                .saturation(state.mode == .off ? 0 : 1)   // green unless Speedy Bot is Off
                 Text("Speedy Bot").font(.headline)
             }
             .padding(.horizontal, 8)

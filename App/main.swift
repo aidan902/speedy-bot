@@ -53,7 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // (a freshly downloaded update) takes over from the running one, so the tech gets what they opened.
         let me = NSRunningApplication.current
         let twins = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
-            .filter { $0.processIdentifier != me.processIdentifier }
+            .filter { $0.processIdentifier != me.processIdentifier && $0.activationPolicy != .prohibited }   // not a diagnostic run
         for twin in twins {
             let samePlace = twin.bundleURL?.standardizedFileURL == Bundle.main.bundleURL.standardizedFileURL
             // Two copies started at the same moment: the later one takes over, the earlier one carries on (the
@@ -159,6 +159,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+/// A diagnostic run of this binary (--check-chat, --dump-chat, …): AppKit is needed, but this process must not count
+/// as a running Speedy Bot. Background-only, so an app starting at the same moment does not take it for a copy that is
+/// already running and quit in its favour.
+func diagnosticRun() {
+    _ = NSApplication.shared
+    NSApp.setActivationPolicy(.prohibited)
+}
+
 // `--selftest`: prove the signed binary starts and its pieces load, without showing anything.
 if CommandLine.arguments.contains("--selftest") {
     let map = LayoutKeyMap.current()
@@ -260,7 +268,7 @@ if CommandLine.arguments.contains("--selftest") {
 
 // `--probe-test`: list the ScreenConnect session windows and read the first one off the screen (nothing is typed).
 if CommandLine.arguments.contains("--probe-test") {
-    _ = NSApplication.shared
+    diagnosticRun()
     let sessions = SessionWindows.all()
     print("sessions: \(sessions.count)")
     for s in sessions { print("  pid \(s.pid) window \(s.windowID) \(Int(s.bounds.width))x\(Int(s.bounds.height)) title=\(s.title) name=\(s.name)") }
@@ -286,7 +294,7 @@ if CommandLine.arguments.contains("--probe-test") {
 // `--dump-chat`: wake ChatGPT the way auto-send does (never activating it) and show what auto-send reads in each
 // chat app's front window: the message box (its length, never its text) and the composer's buttons.
 if CommandLine.arguments.contains("--dump-chat") {
-    _ = NSApplication.shared
+    diagnosticRun()
     let ids = ["anthropic", "openai", "chatgpt", "codex", "grok", "xai", ".x.grok"]
     let apps = NSWorkspace.shared.runningApplications.filter { app in
         let b = (app.bundleIdentifier ?? "").lowercased()
@@ -340,7 +348,7 @@ private func probeWindowID(_ element: AXUIElement, _ windowID: UnsafeMutablePoin
 // roles in its front window), before and after asking it to show everything. For working out a chat app that cannot
 // be read. Prints roles, labels and sizes only, never text.
 if let i = CommandLine.arguments.firstIndex(of: "--ax-probe"), CommandLine.arguments.count > i + 1 {
-    _ = NSApplication.shared
+    diagnosticRun()
     let bid = CommandLine.arguments[i + 1]
     func attr(_ e: AXUIElement, _ name: String) -> AnyObject? {
         var v: AnyObject?
@@ -432,7 +440,7 @@ if let i = CommandLine.arguments.firstIndex(of: "--ocr-bottom"), CommandLine.arg
 // (ScreenshotPasteController.sendBlocker), so a change in how ChatGPT draws its box shows up here, at install,
 // instead of as screenshots that quietly stop sending. Exit 0: would send; 1: would not; 2: no ChatGPT to look at.
 if CommandLine.arguments.contains("--check-chat") {
-    _ = NSApplication.shared
+    diagnosticRun()
     guard let chat = chatGPTBox(wait: 4) else {
         print("check-chat: ChatGPT is not open (or has no window on this desktop); nothing to check")
         ChatSend.releaseAccessibility(wait: true)
@@ -455,7 +463,7 @@ if CommandLine.arguments.contains("--check-chat") {
 // first its own Edit > Paste menu item through accessibility, then Cmd+V posted to its process. Reports what the box
 // shows after each and whether ChatGPT came forward; removes the test picture again and puts the clipboard back.
 if CommandLine.arguments.contains("--test-background-paste") {
-    _ = NSApplication.shared
+    diagnosticRun()
     func attr(_ e: AXUIElement, _ name: String) -> AnyObject? {
         var v: AnyObject?
         return AXUIElementCopyAttributeValue(e, name as CFString, &v) == .success ? v : nil
@@ -554,7 +562,7 @@ if CommandLine.arguments.contains("--restore-screenshot-settings") {
 
 // `--snapshot-setup <file.png>`: the same for the first-run setup window.
 if let i = CommandLine.arguments.firstIndex(of: "--snapshot-setup"), CommandLine.arguments.count > i + 1 {
-    _ = NSApplication.shared
+    diagnosticRun()
     let host = NSHostingView(rootView: SetupView(state: AppState(), status: SetupStatus(), onDone: {}).background(Color(nsColor: .windowBackgroundColor)))
     let window = NSWindow(contentRect: NSRect(origin: .zero, size: host.fittingSize), styleMask: [.titled], backing: .buffered, defer: false)
     window.contentView = host
