@@ -121,6 +121,38 @@ public enum ChatSend {
     }
     private static let woken = Woken()
 
+    /// An app's accessibility window by its CGWindowID; nil when it has gone.
+    static func axWindow(pid: pid_t, windowID: CGWindowID) -> AXUIElement? {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, timeout)
+        guard let windows = attr(app, kAXWindowsAttribute) as? [AXUIElement] else { return nil }
+        return windows.first { w in
+            var id: CGWindowID = 0
+            return _AXUIElementGetWindow(w, &id) == .success && id == windowID
+        }
+    }
+
+    /// The address of the page a browser window shows (its document, else its web area's URL); nil when the browser
+    /// does not tell (Chrome, until its accessibility is on).
+    public static func pageURL(pid: pid_t, windowID: CGWindowID) -> URL? {
+        guard let window = axWindow(pid: pid, windowID: windowID) else { return nil }
+        AXUIElementSetMessagingTimeout(window, timeout)
+        if let doc = attr(window, "AXDocument") as? String, let url = URL(string: doc), url.host != nil { return url }
+        var queue = [window]
+        var seen = 0
+        while !queue.isEmpty, seen < 400 {
+            let e = queue.removeFirst()
+            seen += 1
+            AXUIElementSetMessagingTimeout(e, timeout)
+            if (attr(e, kAXRoleAttribute) as? String) == "AXWebArea" {
+                if let url = attr(e, "AXURL") as? URL { return url }
+                continue   // never into the page itself
+            }
+            if let kids = attr(e, kAXChildrenAttribute) as? [AXUIElement] { queue.append(contentsOf: kids) }
+        }
+        return nil
+    }
+
     /// The window shows more than its frame (a quick look: stops after a few dozen elements).
     public static func isAwake(pid: pid_t) -> Bool {
         let app = AXUIElementCreateApplication(pid)
@@ -239,15 +271,7 @@ public final class Composer: @unchecked Sendable {
     }
 
     /// The window by its CGWindowID; nil when it has gone (or another window is not this one).
-    private func window() -> AXUIElement? {
-        let app = AXUIElementCreateApplication(pid)
-        AXUIElementSetMessagingTimeout(app, ChatSend.timeout)
-        guard let windows = ChatSend.attr(app, kAXWindowsAttribute) as? [AXUIElement] else { return nil }
-        return windows.first { w in
-            var id: CGWindowID = 0
-            return _AXUIElementGetWindow(w, &id) == .success && id == windowID
-        }
-    }
+    private func window() -> AXUIElement? { ChatSend.axWindow(pid: pid, windowID: windowID) }
 
     /// Experimental (--test-background-paste): makes this window the app's main window and the message box its
     /// focused element through accessibility, without activating the app. Returns the two results.

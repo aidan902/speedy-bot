@@ -32,8 +32,44 @@ enum PasteTarget: String, CaseIterable, Identifiable {
     /// window to the message box; there their search and rename fields are the places a picture must not go. The
     /// others get a plain Cmd+V wherever the cursor is.
     func refusesOtherTextFields(in app: NSRunningApplication) -> Bool {
-        self == .chatGPT || Self.declaredTarget(of: app) == self
+        // In a browser the address bar is a text field too, and a picture must not go there.
+        self == .chatGPT || Self.declaredTarget(of: app) == self || Self.isBrowser(app)
     }
+
+    /// Browsers a chat app's website can be open in.
+    static let browserBundleIDs: Set<String> = ["com.apple.Safari", "com.google.Chrome", "company.thebrowser.Browser",
+                                                "com.brave.Browser", "com.microsoft.edgemac"]
+    static func isBrowser(_ app: NSRunningApplication) -> Bool { browserBundleIDs.contains(app.bundleIdentifier ?? "") }
+
+    /// The chat app's website, which counts as the app when it is open in a browser: grok.com for Grok.
+    var website: String? { self == .grok ? "grok.com" : nil }
+
+    /// The chat target a window is: its app's own, or, in a browser, the chat app whose website the window shows. A
+    /// browser window counts when its title names the chat app (grok.com's tabs say "Grok") and, where the browser
+    /// tells the page's address (Safari always; Chrome only once its accessibility is on), that address is the
+    /// website. Asked on every pointer tick, so the address is looked up once per window and title.
+    static func matching(_ app: NSRunningApplication, window: WindowUnderPointer, in targets: Set<PasteTarget>) -> PasteTarget? {
+        if let target = matching(app, in: targets) { return target }
+        guard isBrowser(app) else { return nil }
+        for target in allCases where targets.contains(target) {
+            guard let site = target.website, window.title.localizedCaseInsensitiveContains(target.title) else { continue }
+            let key = "\(window.windowID)|\(window.title)"
+            if let known = siteCache.withLock({ $0[key] }) {
+                if known { return target }
+                continue
+            }
+            let host = ChatSend.pageURL(pid: app.processIdentifier, windowID: window.windowID)?.host?.lowercased()
+            let isSite = host.map { $0 == site || $0.hasSuffix("." + site) } ?? true   // address unknown: the title decides
+            siteCache.withLock { cache in
+                if cache.count > 100 { cache.removeAll() }
+                cache[key] = isSite
+            }
+            if isSite { return target }
+        }
+        return nil
+    }
+
+    private static let siteCache = OSAllocatedUnfairLock(initialState: [String: Bool]())
 
     func matches(_ app: NSRunningApplication) -> Bool {
         let bid = app.bundleIdentifier ?? ""
@@ -422,17 +458,18 @@ final class ScreenshotPasteController {
     /// The chat window under the pointer, else the frontmost window of whichever chosen chat app is open.
     private func shortcutTarget() -> (app: NSRunningApplication, window: WindowUnderPointer)? {
         if let target = targetUnderPointer() { return target }
-        // Auto MCP: the chat window the pointer was last over, while it is still open.
-        if autoMCP, let last = lastChat, let app = NSRunningApplication(processIdentifier: last.pid), !app.isTerminated,
-           PasteTarget.matching(app, in: targets) != nil,
-           let window = WindowHitTest.window(id: last.windowID, ofPID: last.pid) ?? WindowHitTest.frontWindow(ofPID: last.pid) {
-            return (app, window)
+        // Auto MCP: the chat window the pointer was last over, while it is still open (and a browser's still shows
+        // the chat app's website).
+        if autoMCP, let last = lastChat, let app = NSRunningApplication(processIdentifier: last.pid), !app.isTerminated {
+            let window = WindowHitTest.window(id: last.windowID, ofPID: last.pid)
+                ?? (PasteTarget.isBrowser(app) ? nil : WindowHitTest.frontWindow(ofPID: last.pid))
+            if let window, PasteTarget.matching(app, window: window, in: targets) != nil { return (app, window) }
         }
-        let apps = NSWorkspace.shared.runningApplications.filter { PasteTarget.matching($0, in: targets) != nil }
-        // The one in front first, if one of them is.
-        let ordered = apps.sorted { a, _ in a.isActive }
-        for app in ordered {
-            if let window = WindowHitTest.frontWindow(ofPID: app.processIdentifier) { return (app, window) }
+        // The chat window nearest the front: a chat app's, or a browser tab with a chat app's website (grok.com).
+        for window in WindowHitTest.onScreenWindows() {
+            guard let app = NSRunningApplication(processIdentifier: window.ownerPID),
+                  PasteTarget.matching(app, window: window, in: targets) != nil else { continue }
+            return (app, window)
         }
         return nil
     }
@@ -733,7 +770,7 @@ final class ScreenshotPasteController {
     /// The window under the pointer, if it belongs to one of the chosen chat apps.
     private func targetUnderPointer(_ point: CGPoint = WindowHitTest.pointer()) -> (app: NSRunningApplication, window: WindowUnderPointer)? {
         guard let w = WindowHitTest.windowUnder(point), w.bounds.width >= 200, w.bounds.height >= 120,
-              let app = NSRunningApplication(processIdentifier: w.ownerPID), PasteTarget.matching(app, in: targets) != nil else { return nil }
+              let app = NSRunningApplication(processIdentifier: w.ownerPID), PasteTarget.matching(app, window: w, in: targets) != nil else { return nil }
         return (app, w)
     }
 
@@ -775,7 +812,7 @@ final class ScreenshotPasteController {
             dwellTicks = 0
             return
         }
-        SpeedyShared.log.notice("pointer moved onto \(PasteTarget.matching(target.app, in: self.targets)?.title ?? "the chat app", privacy: .public); pasting")
+        SpeedyShared.log.notice("pointer moved onto \(PasteTarget.matching(target.app, window: target.window, in: self.targets)?.title ?? "the chat app", privacy: .public); pasting")
         paste(into: target.app, window: target.window, armed: armed, pointerMustStay: true)
     }
 
@@ -1113,7 +1150,8 @@ final class ScreenshotPasteController {
         pasting = true
         hoverTimer?.invalidate(); hoverTimer = nil
         Task { @MainActor in
-            let name = PasteTarget.matching(app, in: self.targets)?.title ?? "the chat"
+            let target = PasteTarget.matching(app, window: window, in: self.targets)
+            let name = target?.title ?? "the chat"
             let windowID = window.windowID
             var borrowToken: Int?
             /// Not now after all: the screenshot stays ready for a move to the chat app. If an earlier paste of ours
@@ -1210,15 +1248,17 @@ final class ScreenshotPasteController {
             var notSentWhy = ""
             var lookRelocations = 0
             // Claude's message box cannot be read any more (its app stopped showing its contents to accessibility,
-            // Nov 2026; even Electron's own switch is ignored). There auto-send pastes and presses Return, as the
-            // tech chose: whatever is in Claude's box goes with it, and the send cannot be confirmed.
-            let blindTarget = PasteTarget.matching(app, in: self.targets) == .claude
+            // Nov 2026; even Electron's own switch is ignored), and a chat website in a browser is not known well
+            // enough to read its Send button. There auto-send pastes and presses Return, as the tech chose: whatever
+            // is in the box goes with it (only text seen in it holds the Return back), and the send cannot be
+            // confirmed.
+            let blindTarget = target == .claude || PasteTarget.isBrowser(app)
             var blindReturn = false
             if thenSend {
                 let composer = Composer(pid: app.processIdentifier, windowID: windowID)
                 let lookStarted = Date()
                 var before = await Task.detached { () -> ComposerState in
-                    let deadline = Date().addingTimeInterval(blindTarget ? 0 : 3)   // Claude: one look, it stays unreadable
+                    let deadline = Date().addingTimeInterval(blindTarget ? 0 : 3)   // paste and Return: one look is enough
                     var s = composer.read()
                     while s.text == nil, Date() < deadline {
                         try? await Task.sleep(for: .milliseconds(250))
@@ -1246,16 +1286,23 @@ final class ScreenshotPasteController {
                     before = settled
                 }
                 lookRelocations = composer.relocations
-                if let why = Self.sendBlocker(before, ours: ours.map { ($0.images, $0.extras) }), !(why == "unreadable" && blindTarget) {
+                if blindTarget {
+                    // Paste and Return: only text seen in the box (where it can be read at all) holds it back.
+                    if let typed = before.typed, !typed.isEmpty {
+                        notSentWhy = "draft"
+                    } else if self.droppedSomething(since: max(armed.at, lookStarted.addingTimeInterval(-1))) {
+                        notSentWhy = "dropped"
+                    } else {
+                        blindReturn = true
+                    }
+                } else if let why = Self.sendBlocker(before, ours: ours.map { ($0.images, $0.extras) }) {
                     notSentWhy = why
                 } else if self.droppedSomething(since: max(armed.at, lookStarted.addingTimeInterval(-1))) {
                     notSentWhy = "dropped"   // a drag just ended: what it dropped may not show in the box yet
-                } else if before.text == nil && blindTarget {
-                    blindReturn = true
                 } else {
                     sendPlan = composer
                 }
-                SpeedyShared.log.notice("auto-send: before the paste: \(blindReturn ? "unreadable (Claude): paste and Return" : sendPlan != nil ? (ours != nil ? "joining the pending send" : "box clear") : notSentWhy, privacy: .public), streaming=\(before.streaming), pictures=\(before.images), extras=\(before.extras), composer=[\(before.buttons.joined(separator: ", "), privacy: .public)]")
+                SpeedyShared.log.notice("auto-send: before the paste: \(blindReturn ? "paste and Return (\(name))" : sendPlan != nil ? (ours != nil ? "joining the pending send" : "box clear") : notSentWhy, privacy: .public), streaming=\(before.streaming), pictures=\(before.images), extras=\(before.extras), composer=[\(before.buttons.joined(separator: ", "), privacy: .public)]")
                 // A slow look (the tree was still waking) or the wait for our own screenshot: the tech must still be
                 // where the screenshot was taken, and (unless a key was just pressed for this) not have started
                 // anything since the quiet moment above.
@@ -1278,7 +1325,7 @@ final class ScreenshotPasteController {
             // window; its search and rename fields are the places a picture must not go.
             let result = await Paster.paste(
                 into: app, window: window, expectedChangeCount: expected,
-                refuseOtherTextFields: PasteTarget.matching(app, in: self.targets)?.refusesOtherTextFields(in: app) ?? false,
+                refuseOtherTextFields: target?.refusesOtherTextFields(in: app) ?? false,
                 stillOnTarget: {
                     // From a session: no key, click or drag since the quiet moment (it would have gone into the chat
                     // app). By hover: the pointer still on the window.

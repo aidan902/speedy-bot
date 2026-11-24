@@ -8,6 +8,8 @@ public struct WindowUnderPointer: Sendable {
     public let ownerPID: pid_t
     public let ownerName: String
     public let bounds: CGRect       // CG global coordinates: origin = top-left of the primary display, y grows DOWN
+    /// The window's title (a browser's is its tab's page title); "" without Screen Recording permission.
+    public var title: String = ""
 }
 
 public enum WindowHitTest {
@@ -32,9 +34,22 @@ public enum WindowHitTest {
             return WindowUnderPointer(windowID: (d[kCGWindowNumber as String] as? CGWindowID) ?? 0,
                                       ownerPID: (d[kCGWindowOwnerPID as String] as? pid_t) ?? 0,
                                       ownerName: d[kCGWindowOwnerName as String] as? String ?? "",
-                                      bounds: r)
+                                      bounds: r, title: d[kCGWindowName as String] as? String ?? "")
         }
         return nil
+    }
+
+    /// The ordinary windows on screen (this desktop), front to back, big enough to be a chat window.
+    public static func onScreenWindows() -> [WindowUnderPointer] {
+        guard let raw = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return [] }
+        return raw.compactMap { d in
+            guard (d[kCGWindowLayer as String] as? Int) == 0, (d[kCGWindowAlpha as String] as? Double ?? 1) > 0.01,
+                  let bd = d[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: bd),
+                  r.width >= 200, r.height >= 120, let pid = d[kCGWindowOwnerPID as String] as? pid_t else { return nil }
+            return WindowUnderPointer(windowID: (d[kCGWindowNumber as String] as? CGWindowID) ?? 0, ownerPID: pid,
+                                      ownerName: d[kCGWindowOwnerName as String] as? String ?? "", bounds: r,
+                                      title: d[kCGWindowName as String] as? String ?? "")
+        }
     }
 
     /// Is any window of ANOTHER process (a menu, popover, floating panel, at whatever level) drawn over this point,
@@ -68,7 +83,8 @@ public enum WindowHitTest {
         for d in raw {
             guard (d[kCGWindowNumber as String] as? CGWindowID) == id, (d[kCGWindowOwnerPID as String] as? pid_t) == pid,
                   let bd = d[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: bd) else { continue }
-            return WindowUnderPointer(windowID: id, ownerPID: pid, ownerName: d[kCGWindowOwnerName as String] as? String ?? "", bounds: r)
+            return WindowUnderPointer(windowID: id, ownerPID: pid, ownerName: d[kCGWindowOwnerName as String] as? String ?? "", bounds: r,
+                                      title: d[kCGWindowName as String] as? String ?? "")
         }
         return nil
     }
@@ -82,7 +98,8 @@ public enum WindowHitTest {
                   let bd = d[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: bd),
                   r.width >= 200, r.height >= 120 else { continue }
             return WindowUnderPointer(windowID: (d[kCGWindowNumber as String] as? CGWindowID) ?? 0, ownerPID: pid,
-                                      ownerName: d[kCGWindowOwnerName as String] as? String ?? "", bounds: r)
+                                      ownerName: d[kCGWindowOwnerName as String] as? String ?? "", bounds: r,
+                                      title: d[kCGWindowName as String] as? String ?? "")
         }
         return nil
     }

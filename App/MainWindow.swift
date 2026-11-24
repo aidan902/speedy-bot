@@ -191,6 +191,10 @@ struct MainView: View {
                 }
                 Spacer(minLength: 0)
             }
+            if state.pasteTargets.contains(.grok) {
+                Text("Grok counts as the Grok app, or grok.com open in Safari, Chrome, Arc, Brave or Edge (there a screenshot is pasted and Return pressed).")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             HStack(spacing: 8) {
                 RoundToggle(symbol: "checkmark", label: "Auto MCP", isOn: $state.autoMCP, size: 22, emptyWhenOff: true)
                 Text("Auto MCP: paste into the chat app the pointer was last in").lineLimit(1).minimumScaleFactor(0.85)

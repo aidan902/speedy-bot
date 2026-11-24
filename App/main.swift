@@ -300,6 +300,15 @@ if CommandLine.arguments.contains("--dump-chat") {
         let b = (app.bundleIdentifier ?? "").lowercased()
         return ids.contains { b.contains($0) } && app.activationPolicy == .regular
     }
+    // Chat websites open in a browser (grok.com): each such window's message box.
+    for window in WindowHitTest.onScreenWindows() {
+        guard let app = NSRunningApplication(processIdentifier: window.ownerPID), PasteTarget.isBrowser(app),
+              let target = PasteTarget.matching(app, window: window, in: Set(PasteTarget.allCases)) else { continue }
+        let url = ChatSend.pageURL(pid: app.processIdentifier, windowID: window.windowID)
+        let state = Composer(pid: app.processIdentifier, windowID: window.windowID).read()
+        print("== \(target.title) website in \(app.localizedName ?? "?") window \(window.windowID): host=\(url?.host ?? "unknown") box=\(state.text == nil ? "unreadable" : "\(state.text!.count) chars, typed \(state.typed?.count ?? 0)") streaming=\(state.streaming) send=\(state.sendEnabled.map { $0 ? "enabled" : "disabled" } ?? "none")")
+        print("   composer buttons: \(state.buttons.joined(separator: ", "))")
+    }
     print("chat apps: \(apps.count); AXIsProcessTrusted=\(AXIsProcessTrusted()); front=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")")
     for app in apps {
         let pid = app.processIdentifier
@@ -313,6 +322,7 @@ if CommandLine.arguments.contains("--dump-chat") {
         }
         guard let window = WindowHitTest.frontWindow(ofPID: pid) else { print("   no window on screen"); continue }
         let state = Composer(pid: pid, windowID: window.windowID).read()
+        if PasteTarget.isBrowser(app) { continue }
         print("   window \(window.windowID): box=\(state.text == nil ? "unreadable" : "\(state.text!.count) chars, typed \(state.typed?.count ?? 0)") streaming=\(state.streaming) send=\(state.sendEnabled.map { $0 ? "enabled" : "disabled" } ?? "none")")
         print("   composer buttons: \(state.buttons.joined(separator: ", "))")
     }
@@ -432,6 +442,43 @@ if let i = CommandLine.arguments.firstIndex(of: "--ocr-bottom"), CommandLine.arg
         // Bounding boxes come back in the region's own coordinates: back to the whole window.
         let b = r.boundingBox
         print(String(format: "  x=%.2f y=%.3f w=%.2f  %@", b.minX, b.minY * fraction, b.width, text))
+    }
+    exit(0)
+}
+
+// `--browser-probe`: the browser windows on screen, whether their title mentions Grok, and the host each one's page is
+// from (read through accessibility). Only titles that mention Grok are printed. For telling a grok.com tab apart.
+if CommandLine.arguments.contains("--browser-probe") {
+    diagnosticRun()
+    func attr(_ e: AXUIElement, _ name: String) -> AnyObject? {
+        var v: AnyObject?
+        return AXUIElementCopyAttributeValue(e, name as CFString, &v) == .success ? v : nil
+    }
+    let browsers = ["com.apple.Safari", "com.google.Chrome", "company.thebrowser.Browser", "com.brave.Browser", "com.microsoft.edgemac"]
+    let raw = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+    for app in NSWorkspace.shared.runningApplications where browsers.contains(app.bundleIdentifier ?? "") {
+        let pid = app.processIdentifier
+        print("== \(app.localizedName ?? "?") [\(app.bundleIdentifier ?? "")] pid \(pid)")
+        for d in raw where (d[kCGWindowOwnerPID as String] as? pid_t) == pid && (d[kCGWindowLayer as String] as? Int) == 0 {
+            let title = d[kCGWindowName as String] as? String ?? ""
+            let id = d[kCGWindowNumber as String] as? CGWindowID ?? 0
+            print("  window \(id): title \(title.isEmpty ? "(none)" : title.localizedCaseInsensitiveContains("grok") ? "\"\(title)\"" : "(no Grok)")")
+        }
+        // The page each window shows: the web area's URL, host only.
+        let el = AXUIElementCreateApplication(pid)
+        for w in attr(el, kAXWindowsAttribute) as? [AXUIElement] ?? [] {
+            var queue = [w]; var seen = 0; var hosts: [String] = []
+            while !queue.isEmpty, seen < 3000 {
+                let e = queue.removeFirst(); seen += 1
+                if (attr(e, kAXRoleAttribute) as? String) == "AXWebArea" {
+                    if let url = attr(e, "AXURL") as? URL { hosts.append(url.host ?? "?") } else { hosts.append("(no URL)") }
+                    continue
+                }
+                if let kids = attr(e, kAXChildrenAttribute) as? [AXUIElement] { queue.append(contentsOf: kids) }
+            }
+            let doc = (attr(w, "AXDocument") as? String).flatMap { URL(string: $0)?.host } ?? "-"
+            print("  ax window: AXDocument host=\(doc) web areas=\(hosts) elements=\(seen)")
+        }
     }
     exit(0)
 }
