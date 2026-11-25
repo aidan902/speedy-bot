@@ -436,8 +436,8 @@ final class ScreenshotPasteController {
     /// A screenshot has been taken whose file is not there yet: a trigger now is meant for THAT screenshot,
     /// not for an older one that happens to be still waiting.
     private func noteEarlyTrigger(byShortcut: Bool) -> Bool {
-        guard previewDelaysFiles, capturePending || armed == nil else { return false }
-        earlyTrigger = (Date(), byShortcut, capturePending)
+        guard previewDelaysFiles, capturePending || armed == nil || (autoSendFromSession && newerScreenshotComing) else { return false }
+        earlyTrigger = (Date(), byShortcut, capturePending || newerScreenshotComing)
         return true
     }
 
@@ -451,8 +451,14 @@ final class ScreenshotPasteController {
         if let armed {
             let age = Date().timeIntervalSince(armed.at)
             paste(into: target.app, window: target.window, armed: armed, pointerMustStay: true,
-                  thenSend: sendsWhenAsked(armed) && age < min(60, hoverMaxAge ?? 60), asked: .click(at: Date()))
+                  thenSend: sendsWhenAsked(armed) && age < (trigger == .hover ? min(60, hoverMaxAge ?? 60) : 60), asked: .click(at: Date()))
         }
+    }
+
+    /// A newer screenshot is on its way: its tool or corner preview is up, or it closed a moment ago and its file is
+    /// still being written (the keypad waits for the same).
+    private var newerScreenshotComing: Bool {
+        previewDelaysFiles && (capturePending || (lastCaptureToolAt > lastScreenshotAt && Date().timeIntervalSince(lastCaptureToolAt) < 3))
     }
 
     /// Auto-send for a paste asked for in the chat app (hover, click, shortcut), unless the screenshot was meant to
@@ -613,6 +619,7 @@ final class ScreenshotPasteController {
     /// A keypad paste whose screenshot came after the press: only if the app in front then still is (never pulling
     /// the chat app over some other app the tech has moved on to).
     private func runKeyPasteIfStillThere(send: Bool, armed: Armed, pressedAt: Date, frontPID: pid_t?) {
+        if !send { keepUnsentID = armed.id }   // the keypad's Paste: stays unsent however it is picked up later
         if frontPID == nil || Date().timeIntervalSince(pressedAt) < 2 || NSWorkspace.shared.frontmostApplication?.processIdentifier == frontPID {
             runKeyPaste(send: send, armed: armed, pressedAt: pressedAt)
         } else {
@@ -623,6 +630,7 @@ final class ScreenshotPasteController {
     }
 
     private func runKeyPaste(send: Bool, armed: Armed, pressedAt: Date) {
+        if !send { keepUnsentID = armed.id }
         guard let target = shortcutTarget() else {
             Toast.show("Open \(PasteTarget.names(targets)) first", seconds: 2.5)
             releaseIfIdle()
@@ -645,6 +653,7 @@ final class ScreenshotPasteController {
             if Date().timeIntervalSince(sessionCaptureAt) < 4, sessionCaptureAt >= intent.since {
                 keyIntent = nil
                 sessionCaptureAt = .distantPast   // that capture has arrived: no later screenshot is it
+                if !intent.send { keepUnsentID = armed.id }
                 if pasting {
                     deferredKeyPaste = (armed.id, intent.send, intent.at, intent.frontPID)
                 } else {
@@ -669,6 +678,7 @@ final class ScreenshotPasteController {
         let windowCapture = Date().timeIntervalSince(sessionCaptureAt) < 4
         if windowCapture { sessionCaptureAt = .distantPast }   // that capture has arrived: no later screenshot is it
         let multi = multiCapture && windowCapture
+        if multi { keepUnsentID = armed.id }   // gathered to send by hand: never sent by a later hover, click or shortcut
         // A file the corner preview held back was taken where the screenshot tool came up, not where the tech is
         // now: it counts as the session's only if it was taken there.
         var takenInSession = true
@@ -868,7 +878,7 @@ final class ScreenshotPasteController {
         }
         // With auto-send on, never the older screenshot while a newer one is being taken (its corner preview up):
         // that one is the one the tech means, and it replaces this one when it lands.
-        if autoSendFromSession, previewDelaysFiles, capturePending {
+        if autoSendFromSession, newerScreenshotComing {
             dwellTicks = 0
             return
         }
@@ -915,7 +925,7 @@ final class ScreenshotPasteController {
             if pendingSends[window]?.token == token { pendingSends[window] = nil }
             if recentSessionSend?.token == token { recentSessionSend = sent ? (Date(), token, true) : nil }
             SpeedyShared.log.notice("auto-send: \(why, privacy: .public) at \(ms()) ms")
-            if let toast { Toast.show(toast, seconds: sent ? 1.4 : 4) }
+            if let toast { Toast.show(clipboardNote ? "\(toast). It is now on your clipboard too" : toast, seconds: sent && !clipboardNote ? 1.4 : 4) }
             releaseIfIdle()
             return sent
         }
@@ -1051,7 +1061,7 @@ final class ScreenshotPasteController {
                     presses += 1
                     let accepted = await Task.detached { ChatSend.press(SendButton(element: button)) }.value
                     if await confirmSent(composer, window: window, token: token) {
-                        return finish(true, "sent (button)", toast: clipboardNote ? "Screenshot sent to \(name). It is now on your clipboard too" : "Screenshot sent to \(name)")
+                        return finish(true, "sent (button)", toast: "Screenshot sent to \(name)")
                     }
                     if !stillOurs() { continue }
                     SpeedyShared.log.notice("auto-send: press \(presses) not confirmed (accepted=\(accepted))")
@@ -1317,6 +1327,12 @@ final class ScreenshotPasteController {
                 }
             }
 
+            /// The tech's clipboard could not be set aside (it now holds the screenshot): every message about a paste
+            /// that was to be sent says so.
+            @MainActor func withNote(_ text: String) -> String {
+                clipboardReplaced && thenSend ? "\(text). It is now on your clipboard too" : text
+            }
+
             // Auto-send must never send anything the tech has put in the box, so the message box of this very window
             // is read first: any typed text, or pictures and files other than our own auto-send still waiting there,
             // mean paste only. A box that cannot be read within 3 s (the tree still waking) also means paste only.
@@ -1453,7 +1469,7 @@ final class ScreenshotPasteController {
                     // Claude: the next screenshot's Return sends this one with it (it sends the whole box).
                 } else if result == .pasted, thenSend {
                     self.pendingSends[windowID] = nil
-                    Toast.show("Screenshot pasted into \(name), not sent: another one came in. Send them from \(name)", seconds: 3.5)
+                    Toast.show(withNote("Screenshot pasted into \(name), not sent: another one came in. Send them from \(name)"), seconds: 3.5)
                 } else if result == .clipboardChanged, thenSend {
                     Toast.show("That screenshot was replaced on the clipboard before it could be pasted", seconds: 2.5)
                 }
@@ -1488,22 +1504,21 @@ final class ScreenshotPasteController {
                        !Self.input(since: pasteBegan), !TextTyper.physicalModifiersDown(), stillWanted() {
                         Paster.postReturn()
                         SpeedyShared.log.notice("auto-send: Return pressed in \(name, privacy: .public) (its message box cannot be read)")
-                        Toast.show(clipboardReplaced ? "Screenshot sent to \(name). It is now on your clipboard too" : "Screenshot sent to \(name)",
-                                   seconds: clipboardReplaced ? 3 : 1.4)
+                        Toast.show(withNote("Screenshot sent to \(name)"), seconds: clipboardReplaced ? 3 : 1.4)
                         if keyPressedAt == nil, asked == nil { self.recentSessionSend = (Date(), -1, true) }
                     } else {
                         SpeedyShared.log.notice("auto-send: \(name, privacy: .public) left in the paste (the tech was busy, or it was switched off)")
-                        Toast.show("Screenshot pasted into \(name), not sent. Press Return in \(name) to send it", seconds: 3.5)
+                        Toast.show(withNote("Screenshot pasted into \(name), not sent. Press Return in \(name) to send it"), seconds: 3.5)
                     }
                     if let returnTo, !returnTo.isTerminated { Paster.bringBack(returnTo) }
                     break
                 }
                 guard let composer = sendPlan else {
                     // Left in the chat app for the tech to finish: no jump back, no send.
-                    Toast.show(earlierWaiting ? "Screenshot pasted into \(name), not sent, with the one before it. Send them from \(name)"
+                    Toast.show(withNote(earlierWaiting ? "Screenshot pasted into \(name), not sent, with the one before it. Send them from \(name)"
                                : notSentWhy == "draft" ? "Screenshot pasted into \(name). There is already a message in progress, so it was not sent"
                                : notSentWhy == "dropped" ? "Screenshot pasted into \(name), not sent: something may have been dropped into the message box"
-                               : "Screenshot pasted into \(name), not sent. Send it from \(name)", seconds: 4)
+                               : "Screenshot pasted into \(name), not sent. Send it from \(name)"), seconds: 4)
                     self.giveSessionBack(returnTo, from: app)
                     break
                 }
@@ -1533,8 +1548,8 @@ final class ScreenshotPasteController {
                 guard after.typed == "" else {
                     if self.pendingSends[windowID]?.token == token { self.pendingSends[windowID] = nil }
                     SpeedyShared.log.notice("auto-send: after the paste the box holds \(after.typed == nil ? "something unreadable" : "typing", privacy: .public); not sent")
-                    Toast.show(after.typed == nil ? "Screenshot pasted into \(name), not sent. Send it from \(name)"
-                                                  : "Screenshot pasted into \(name), not sent: some typing went into the message box", seconds: 4)
+                    Toast.show(withNote(after.typed == nil ? "Screenshot pasted into \(name), not sent. Send it from \(name)"
+                                                           : "Screenshot pasted into \(name), not sent: some typing went into the message box"), seconds: 4)
                     // The tech was working in the session: their next keys belong there, not in the chat app.
                     if let returnTo, !returnTo.isTerminated, NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier {
                         Paster.bringBack(returnTo)
@@ -1546,7 +1561,7 @@ final class ScreenshotPasteController {
                     // The message box was replaced between the look and the paste (another conversation): not sent.
                     self.pendingSends[windowID] = nil
                     SpeedyShared.log.notice("auto-send: the message box changed before the paste; not sent")
-                    Toast.show("Screenshot pasted into \(name), not sent: the conversation changed. Send it from \(name)", seconds: 4)
+                    Toast.show(withNote("Screenshot pasted into \(name), not sent: the conversation changed. Send it from \(name)"), seconds: 4)
                     if let returnTo, !returnTo.isTerminated { Paster.bringBack(returnTo) }
                     break
                 }
