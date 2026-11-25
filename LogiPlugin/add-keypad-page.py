@@ -39,8 +39,9 @@ SB_BUNDLE = "net.fm.speedybot"
 P = "$SpeedyBot___Loupedeck.SpeedyBotPlugin."
 # Plain commands only: Logi Options+ shows a warning sign instead of the picture of a parameterized command.
 # The page, row by row:  On | Off | Auto  /  Auto send | Type (⌘⇧V) | Ticket  /  Capture (⇧⌘2) | - | Auto MCP
+# Ticket is a folder: a press opens recent 1 | 2 | 3  /  -  /  Back | New | -  (TicketFolder).
 KEYS = [P + "OnCommand", P + "OffCommand", P + "AutoCommand",
-        P + "AutoSendCommand", P + "TypeCommand", P + "TicketCommand",
+        P + "AutoSendCommand", P + "TypeCommand", "$SpeedyBot___#DynamicFolder___DynamicFolder#Loupedeck.SpeedyBotPlugin.TicketFolder",
         P + "CaptureCommand", None, P + "AutoMcpCommand"]
 # Keys made by 0.7.1 (one parameterized command) -> the plain commands that replace it.
 MIGRATE = {P + "ModeCommand___on": P + "OnCommand", P + "ModeCommand___auto": P + "AutoCommand",

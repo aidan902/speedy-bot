@@ -1,6 +1,7 @@
 namespace Loupedeck.SpeedyBotPlugin
 {
     using System;
+    using System.Collections.Generic;
     using System.Diagnostics;
     using System.IO;
     using System.Text.Json;
@@ -35,6 +36,9 @@ namespace Loupedeck.SpeedyBotPlugin
 
         /// <summary>The incident number screenshots are filed under ("#INC - 12,345"), or "" when none is set.</summary>
         public String Incident { get; private set; } = "";
+
+        /// <summary>The last three incident numbers used, newest first (the ticket keys offer them).</summary>
+        public IReadOnlyList<String> RecentIncidents { get; private set; } = Array.Empty<String>();
 
         private readonly String _stateFile = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
@@ -71,12 +75,14 @@ namespace Loupedeck.SpeedyBotPlugin
             lock (this._lock)
             {
                 changed = mode != this.Mode || raw != this.RawMode || settings.AutoSend != this.AutoSend
-                    || settings.AutoMcp != this.AutoMcp || settings.Incident != this.Incident;
+                    || settings.AutoMcp != this.AutoMcp || settings.Incident != this.Incident
+                    || String.Join("\n", settings.Recent) != String.Join("\n", this.RecentIncidents);
                 this.Mode = mode;
                 this.RawMode = raw;
                 this.AutoSend = settings.AutoSend;
                 this.AutoMcp = settings.AutoMcp;
                 this.Incident = settings.Incident;
+                this.RecentIncidents = settings.Recent;
             }
             // The first look after the log is available is always written: build.sh waits for this line to know
             // the plugin really runs (the service logs "Started loading" before it knows whether loading worked).
@@ -92,13 +98,13 @@ namespace Loupedeck.SpeedyBotPlugin
             }
         }
 
-        private (SpeedyMode, String, (Boolean AutoSend, Boolean AutoMcp, String Incident)) Read()
+        private (SpeedyMode, String, (Boolean AutoSend, Boolean AutoMcp, String Incident, IReadOnlyList<String> Recent)) Read()
         {
             try
             {
                 if (!File.Exists(this._stateFile))
                 {
-                    return (SpeedyMode.NotRunning, null, (false, false, ""));
+                    return (SpeedyMode.NotRunning, null, (false, false, "", Array.Empty<String>()));
                 }
                 using var doc = JsonDocument.Parse(File.ReadAllText(this._stateFile));
                 var root = doc.RootElement;
@@ -107,7 +113,8 @@ namespace Loupedeck.SpeedyBotPlugin
                 var settings = (
                     root.TryGetProperty("autoSend", out var s) && s.ValueKind == JsonValueKind.True,
                     root.TryGetProperty("autoMCP", out var c) && c.ValueKind == JsonValueKind.True,
-                    root.TryGetProperty("incident", out var i) && i.ValueKind == JsonValueKind.String ? i.GetString() ?? "" : "");
+                    root.TryGetProperty("incident", out var i) && i.ValueKind == JsonValueKind.String ? i.GetString() ?? "" : "",
+                    ReadRecent(root));
                 if (!running || !IsSpeedyBot(pid))
                 {
                     return (SpeedyMode.NotRunning, null, settings);
@@ -124,8 +131,24 @@ namespace Loupedeck.SpeedyBotPlugin
             catch (Exception)
             {
                 // Read while the app was replacing the file, or a file from another version: keep what is shown.
-                lock (this._lock) { return (this.Mode, this.RawMode, (this.AutoSend, this.AutoMcp, this.Incident)); }
+                lock (this._lock) { return (this.Mode, this.RawMode, (this.AutoSend, this.AutoMcp, this.Incident, this.RecentIncidents)); }
             }
+        }
+
+        private static IReadOnlyList<String> ReadRecent(JsonElement root)
+        {
+            var list = new List<String>();
+            if (root.TryGetProperty("recentIncidents", out var r) && r.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in r.EnumerateArray())
+                {
+                    if (item.ValueKind == JsonValueKind.String && !String.IsNullOrEmpty(item.GetString()) && list.Count < 3)
+                    {
+                        list.Add(item.GetString());
+                    }
+                }
+            }
+            return list;
         }
 
         /// <summary>The file says running, but a crash leaves it saying so: the process must still be there.</summary>
