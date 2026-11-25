@@ -40,6 +40,11 @@ enum PasteTarget: String, CaseIterable, Identifiable {
     static let browserBundleIDs: Set<String> = ["com.apple.Safari", "com.google.Chrome", "company.thebrowser.Browser",
                                                 "com.brave.Browser", "com.microsoft.edgemac"]
     static func isBrowser(_ app: NSRunningApplication) -> Bool { browserBundleIDs.contains(app.bundleIdentifier ?? "") }
+    /// Chrome and the other Chromium browsers show a page to accessibility only once asked (the switch the ChatGPT
+    /// app needs too); Safari always does.
+    static func showsPageOnlyWhenAsked(_ app: NSRunningApplication) -> Bool {
+        isBrowser(app) && app.bundleIdentifier != "com.apple.Safari"
+    }
 
     /// The chat app's website, which counts as the app when it is open in a browser: grok.com for Grok.
     var website: String? { self == .grok ? "grok.com" : nil }
@@ -1193,6 +1198,17 @@ final class ScreenshotPasteController {
         releaseIfIdle()
     }
 
+    /// A browser woken for a paste: its switch goes off again a few seconds after, unless another paste is under way.
+    private func releaseBrowserSoon(_ app: NSRunningApplication) {
+        let pid = app.processIdentifier
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            MainActor.assumeIsolated {
+                if self.pasting { self.releaseBrowserSoon(app); return }
+                ChatSend.releaseAccessibility(pid: pid)
+            }
+        }
+    }
+
     /// Auto-send is off or Speedy Bot is stopping: ChatGPT no longer needs its tree kept up for us.
     private func releaseChatApps() { ChatSend.releaseAccessibility() }
 
@@ -1382,6 +1398,24 @@ final class ScreenshotPasteController {
                     clipboardReplaced = true   // too big to set aside, or macOS will not let it be read quietly
                     SpeedyShared.log.notice("the clipboard could not be set aside; it now holds the screenshot")
                 }
+            }
+
+            // Chrome (and the other Chromium browsers): its page is asked for now, with up to 2 s to be built, so the
+            // message box can be found, given the keyboard and read; the switch goes off again after this paste.
+            var wokeBrowser = false
+            defer { if wokeBrowser { self.releaseBrowserSoon(app) } }
+            if PasteTarget.showsPageOnlyWhenAsked(app), target != nil {
+                wokeBrowser = true
+                ChatSend.wakeAccessibility(pid: app.processIdentifier)
+                let probe = Composer(pid: app.processIdentifier, windowID: windowID)
+                let ready = await Task.detached { () -> Bool in
+                    for _ in 0..<10 {
+                        if probe.read().text != nil { return true }
+                        try? await Task.sleep(for: .milliseconds(200))
+                    }
+                    return false
+                }.value
+                SpeedyShared.log.notice("browser: \(app.localizedName ?? "the browser", privacy: .public) page \(ready ? "readable" : "still not readable after 2 s", privacy: .public)")
             }
 
             /// The tech's clipboard could not be set aside (it now holds the screenshot): every message about a paste

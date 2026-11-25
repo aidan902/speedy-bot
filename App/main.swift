@@ -305,7 +305,17 @@ if CommandLine.arguments.contains("--dump-chat") {
         guard let app = NSRunningApplication(processIdentifier: window.ownerPID), PasteTarget.isBrowser(app),
               let target = PasteTarget.matching(app, window: window, in: Set(PasteTarget.allCases)) else { continue }
         let url = ChatSend.pageURL(pid: app.processIdentifier, windowID: window.windowID)
-        let state = Composer(pid: app.processIdentifier, windowID: window.windowID).read()
+        let woke = PasteTarget.showsPageOnlyWhenAsked(app) && !ChatSend.isAwake(pid: app.processIdentifier)
+        if woke {
+            ChatSend.wakeAccessibility(pid: app.processIdentifier, takeOver: false)
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+        var state = Composer(pid: app.processIdentifier, windowID: window.windowID).read()
+        for _ in 0..<8 where woke && state.text == nil {
+            Thread.sleep(forTimeInterval: 0.25)
+            state = Composer(pid: app.processIdentifier, windowID: window.windowID).read()
+        }
+        if woke { ChatSend.releaseAccessibility(pid: app.processIdentifier, wait: true) }
         print("== \(target.title) website in \(app.localizedName ?? "?") window \(window.windowID): host=\(url?.host ?? "unknown") box=\(state.text == nil ? "unreadable" : "\(state.text!.count) chars, typed \(state.typed?.count ?? 0)") streaming=\(state.streaming) send=\(state.sendEnabled.map { $0 ? "enabled" : "disabled" } ?? "none")")
         print("   composer buttons: \(state.buttons.joined(separator: ", "))")
     }

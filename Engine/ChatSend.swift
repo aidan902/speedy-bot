@@ -98,6 +98,16 @@ public enum ChatSend {
             guard let started = Self.startTime(of: pid) else { return false }
             return Self.record()[String(pid)] == started
         }
+        /// One app's flag is ours no more (switched off again); true when it was.
+        func take(_ pid: pid_t) -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            let had = ours.remove(pid) != nil
+            askedAt[pid] = nil
+            var record = Self.record()
+            record[String(pid)] = nil
+            UserDefaults.standard.set(record, forKey: Self.recordKey)
+            return had
+        }
         func takeOurs() -> [pid_t] {
             lock.lock(); defer { lock.unlock() }
             let all = Array(ours)
@@ -211,6 +221,18 @@ public enum ChatSend {
 
     /// Switches the flag off again on every app Speedy Bot switched it on for (auto-send off, or quitting): the app
     /// then stops keeping its whole page available to accessibility. `wait`: done before returning (at quit).
+    /// Switches the flag off again for one app, if this Speedy Bot switched it on (a browser woken for one paste).
+    public static func releaseAccessibility(pid: pid_t, wait: Bool = false) {
+        let work: @Sendable () -> Void = {
+            guard woken.take(pid) else { return }
+            let app = AXUIElementCreateApplication(pid)
+            AXUIElementSetMessagingTimeout(app, timeout)
+            AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanFalse)
+            AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanFalse)
+        }
+        if wait { flagQueue.sync(execute: work) } else { flagQueue.async(execute: work) }
+    }
+
     public static func releaseAccessibility(wait: Bool = false) {
         let work: @Sendable () -> Void = {
             for pid in woken.takeOurs() {
