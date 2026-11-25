@@ -315,6 +315,18 @@ if CommandLine.arguments.contains("--selftest") {
     expect("local account", [WindowsPrompt.localAccount("LocalAdmin"), WindowsPrompt.localAccount("CORP\\jsmith"), WindowsPrompt.localAccount("a@b.com")].joined(separator: " "), ".\\LocalAdmin CORP\\jsmith a@b.com")
     expect("sign straight in", String(describing: WindowsPrompt.signIn(userBox: true).typing(username: "LocalAdmin", password: "pw")), String(describing: WindowsPrompt.Typing.text(".\\LocalAdmin\tpw\n")))
     expect("no user name, no typing", String(String(describing: WindowsPrompt.signIn(userBox: true).typing(username: "", password: "pw")).hasPrefix("refuse")), "true")
+    // The box's buttons: what each one types, on a Windows screen and elsewhere.
+    func typed(_ kind: PickKind, _ prompt: WindowsPrompt?) -> String {
+        switch kind.text(username: "u", password: "p", prompt: prompt) { case .text(let t): return t.debugDescription; case .refuse: return "refused" }
+    }
+    expect("auto, other user", typed(.auto, .signIn(userBox: true)), #"".\\u\tp\n""#)
+    expect("auto, web page", typed(.auto, nil), #""p""#)
+    expect("user + password, web", typed(.userAndPassword, nil), #""u\tp""#)
+    expect("user + password, admin prompt", typed(.userAndPassword, .adminPrompt(userBox: true)), #"".\\u\tp\n""#)
+    expect("password into a user box refused", typed(.passwordOnly, .signIn(userBox: true)), "refused")
+    expect("password, one user", typed(.passwordOnly, .signIn(userBox: false)), #""p\n""#)
+    expect("user only, other user", typed(.userOnly, .signIn(userBox: true)), #"".\\u""#)
+    expect("lock screen refuses any button", typed(.userAndPassword, .lockScreen), "refused")
     expect("machine", PickMemory.machine(fromTitle: "ScreenConnect - LAB-ROOM12 - Connected") ?? "nil", "LAB-ROOM12")
     expect("name start", [PickMemory.prefix(of: "LAB-ROOM12") ?? "nil", PickMemory.prefix(of: "DESKTOP-4F2K9") ?? "nil", PickMemory.prefix(of: "FRONTDESK") ?? "nil"].joined(separator: " "), "LAB nil nil")
     let picks = ["LAB-LOBBY": PickMemory.Pick(id: "lobby", at: 1), "LAB-GYM": PickMemory.Pick(id: "gym", at: 2), "ABC-1": PickMemory.Pick(id: "abc", at: 3)]

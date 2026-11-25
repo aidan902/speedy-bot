@@ -388,6 +388,11 @@ private final class OnceFlag: @unchecked Sendable {
     func claim() -> Bool { lock.lock(); defer { lock.unlock() }; if done { return false }; done = true; return true }
 }
 
+/// A click on the box works the first time, even while the keyboard is elsewhere (no click just to wake it up).
+private final class FirstClickHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 /// A panel that can take the keyboard (and the search box's typing) while another app stays in front.
 private final class KeyPanel: NSPanel {
     override var canBecomeKey: Bool { true }
@@ -413,6 +418,16 @@ final class PasswordPicker: NSObject, NSWindowDelegate {
 
         init(place: String) { self.place = place }
 
+        /// The login chosen in advance (the card says "Suggested" while it is still the one shown).
+        @Published var suggested: OnePassword.Item.ID?
+
+        /// The login Return and the card's buttons type: the selected one, else the first result of a search.
+        var chosen: OnePassword.Item? {
+            let list = shown
+            let searched = !query.trimmingCharacters(in: .whitespaces).isEmpty
+            return list.first(where: { $0.id == selection }) ?? (searched ? list.first : nil)
+        }
+
         var shown: [OnePassword.Item] {
             let q = query.trimmingCharacters(in: .whitespaces).lowercased()
             guard !q.isEmpty else { return items }
@@ -430,7 +445,7 @@ final class PasswordPicker: NSObject, NSWindowDelegate {
     /// The app the pick is typed into (the session, or the browser).
     private var target: NSRunningApplication?
     /// What a pick does: (item, with username).
-    private var onPick: ((OnePassword.Item, Bool) -> Void)?
+    private var onPick: ((OnePassword.Item, PickKind) -> Void)?
 
     /// The search is up. It can hold the keyboard while ScreenConnect (or the browser) stays the app in front, so
     /// nothing that checks the front app can tell where typed keys go meanwhile.
@@ -445,18 +460,18 @@ final class PasswordPicker: NSObject, NSWindowDelegate {
     /// `preferred`: the login picked last time on this machine, and the note saying so.
     func show(place: String, session: String, over: NSRect? = nil, target: NSRunningApplication? = nil,
               preferred: (id: String, note: String)? = nil,
-              reading: @escaping @Sendable () async -> PageReading, onPick: @escaping (OnePassword.Item, Bool) -> Void) {
+              reading: @escaping @Sendable () async -> PageReading, onPick: @escaping (OnePassword.Item, PickKind) -> Void) {
         close()
         self.target = target
         let model = Model(place: place)
         self.model = model
         self.onPick = onPick
-        let view = PasswordPickerView(model: model, pick: { [weak self] item, withUser in self?.pick(item, withUser: withUser) },
+        let view = PasswordPickerView(model: model, pick: { [weak self] item, kind in self?.pick(item, kind) },
                                       takeKeyboard: { [weak self] in self?.takeKeyboard() })
         // A key press from the keypad is not a click in Speedy Bot, so macOS will not bring Speedy Bot to the front
         // for it. The search box is therefore a panel that takes the keyboard without Speedy Bot coming to the front,
         // and stays up while another app is in front (a plain panel hides itself then: the box opened unseen).
-        let panel = KeyPanel(contentRect: NSRect(x: 0, y: 0, width: 520, height: 420),
+        let panel = KeyPanel(contentRect: NSRect(x: 0, y: 0, width: 540, height: 500),
                              styleMask: [.titled, .closable, .fullSizeContentView, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.title = "Type a 1Password password"
         panel.titlebarAppearsTransparent = true
@@ -466,7 +481,7 @@ final class PasswordPicker: NSObject, NSWindowDelegate {
         panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]   // over a full-screen session too
         panel.isReleasedWhenClosed = false
         panel.delegate = self
-        panel.contentView = NSHostingView(rootView: view)
+        panel.contentView = FirstClickHostingView(rootView: view)
         // The screen holding most of the target window (as AppKit decides a window's screen).
         var screen = NSScreen.main
         if let frame = over {
@@ -480,9 +495,9 @@ final class PasswordPicker: NSObject, NSWindowDelegate {
         if let frame = over, let screen {
             // Centred on the session window (given in AppKit's bottom-left coordinates), kept on its screen.
             let visible = screen.visibleFrame
-            var origin = NSPoint(x: frame.midX - 260, y: frame.midY - 210)
-            origin.x = min(max(origin.x, visible.minX), visible.maxX - 520)
-            origin.y = min(max(origin.y, visible.minY), visible.maxY - 420)
+            var origin = NSPoint(x: frame.midX - 270, y: frame.midY - 250)
+            origin.x = min(max(origin.x, visible.minX), visible.maxX - 540)
+            origin.y = min(max(origin.y, visible.minY), visible.maxY - 500)
             panel.setFrameOrigin(origin)
         } else {
             panel.center()
@@ -513,7 +528,7 @@ final class PasswordPicker: NSObject, NSWindowDelegate {
                 // Repeats of a held Return, and a second press while one is pending, are swallowed here.
                 if event.isARepeat || self.returnPending { return nil }
                 self.returnPending = true
-                let withUser = event.modifierFlags.contains(.option)
+                let kind: PickKind = event.modifierFlags.contains(.option) ? .userAndPassword : .auto
                 let key = CGKeyCode(event.keyCode)
                 Task { @MainActor in
                     // A click on a row selects it a moment later; and the search keeps the keyboard until Return is up,
@@ -526,7 +541,7 @@ final class PasswordPicker: NSObject, NSWindowDelegate {
                     guard self.model === model else { return }
                     self.returnPending = false
                     if let item = Self.chosen(model) {
-                        self.pick(item, withUser: withUser)
+                        self.pick(item, kind)
                     } else {
                         NSSound.beep()   // nothing chosen yet
                     }
@@ -548,6 +563,7 @@ final class PasswordPicker: NSObject, NSWindowDelegate {
                 model.items = ranked.items
                 // Chosen in advance only when it fits the page or the session; otherwise the tech picks or searches.
                 model.selection = ranked.matched ? ranked.items.first?.id : nil
+                model.suggested = model.selection
                 model.note = ranked.host.map { page in "Matched to \(page)" + (ranked.savedFor.map { ", login saved for \($0)" } ?? "") }
                     ?? ranked.read.map { "Page: \($0). No login saved for this address" + (ranked.matched ? "; the one chosen fits the session's name" : ", so none is chosen") }
                     ?? (ranked.usedPreferred ? preferred?.note : nil)
@@ -595,18 +611,13 @@ final class PasswordPicker: NSObject, NSWindowDelegate {
     func windowDidBecomeKey(_ notification: Notification) { model?.hasKeyboard = true }
     func windowDidResignKey(_ notification: Notification) { model?.hasKeyboard = false }
 
-    /// The login Return would type: the selected one, else the first result of a search.
-    private static func chosen(_ model: Model) -> OnePassword.Item? {
-        let list = model.shown
-        let searched = !model.query.trimmingCharacters(in: .whitespaces).isEmpty
-        return list.first(where: { $0.id == model.selection }) ?? (searched ? list.first : nil)
-    }
+    private static func chosen(_ model: Model) -> OnePassword.Item? { model.chosen }
 
     /// The Password key pressed again while the box is up: type the chosen login's password, as Return does.
     /// False when nothing is chosen yet.
     func pickChosen() -> Bool {
         guard let model, let item = Self.chosen(model) else { return false }
-        pick(item, withUser: false)
+        pick(item, .auto)
         return true
     }
 
@@ -619,10 +630,10 @@ final class PasswordPicker: NSObject, NSWindowDelegate {
         }
     }
 
-    private func pick(_ item: OnePassword.Item, withUser: Bool) {
+    private func pick(_ item: OnePassword.Item, _ kind: PickKind) {
         let onPick = self.onPick
         close()
-        onPick?(item, withUser)
+        onPick?(item, kind)
     }
 
     func close() {
@@ -648,7 +659,7 @@ final class PasswordPicker: NSObject, NSWindowDelegate {
 
 private struct PasswordPickerView: View {
     @ObservedObject var model: PasswordPicker.Model
-    let pick: (OnePassword.Item, Bool) -> Void
+    let pick: (OnePassword.Item, PickKind) -> Void
     let takeKeyboard: () -> Void
     @FocusState private var searchFocused: Bool
 
@@ -675,6 +686,25 @@ private struct PasswordPickerView: View {
                 Label(note, systemImage: note.hasPrefix("Matched") ? "checkmark.circle.fill" : "questionmark.circle")
                     .font(.caption).foregroundStyle(note.hasPrefix("Matched") ? Color.green : Color.secondary)
             }
+            if model.status == nil, let item = model.chosen {
+                // One click types: no double-clicking.
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(item.id == model.suggested && model.query.isEmpty ? "SUGGESTED" : "SELECTED")
+                        .font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+                    Text(item.title).font(.headline).lineLimit(1)
+                    Text([item.username, item.vault].filter { !$0.isEmpty }.joined(separator: "  ·  "))
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    HStack(spacing: 8) {
+                        Button("User + Password") { pick(item, .userAndPassword) }.buttonStyle(.borderedProminent)
+                        Button("Password") { pick(item, .passwordOnly) }.buttonStyle(.bordered)
+                        Button("User") { pick(item, .userOnly) }.buttonStyle(.bordered)
+                    }
+                    .controlSize(.large)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(0.10)))
+            }
             if let status = model.status {
                 Text(status).foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -687,13 +717,11 @@ private struct PasswordPickerView: View {
                         }
                         .tag(item.id)
                         .id(item.id)
-                        .contentShape(Rectangle())
-                        .onTapGesture(count: 2) { pick(item, NSEvent.modifierFlags.contains(.option)) }
                     }
                     .onChange(of: model.selection) { id in if let id { proxy.scrollTo(id) } }
                 }
             }
-            Text("Return, or the Password key again, types the password into \(model.place).  ⌥Return types the username, Tab, then the password.  Esc closes.")
+            Text("Click a login to show it above, then one click types it into \(model.place). Return, or the Password key again, types it the suggested way; ⌥Return types the username, Tab, then the password. Esc closes.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(16)

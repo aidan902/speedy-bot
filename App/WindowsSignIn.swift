@@ -100,6 +100,36 @@ enum WindowsPrompt: Equatable, Sendable {
     }
 }
 
+/// How a pick is typed. `auto` (Return, or the Password key again): on a Windows sign-in or admin prompt whatever the
+/// screen asks for, then Enter; elsewhere the password. The others are the box's buttons (⌥Return is userAndPassword).
+enum PickKind: String, Sendable {
+    case auto, userAndPassword, passwordOnly, userOnly
+
+    /// What one pick types. `prompt`: the Windows screen showing in the session (nil anywhere else).
+    func text(username: String, password: String, prompt: WindowsPrompt?) -> WindowsPrompt.Typing {
+        // A lock screen still up, Ctrl+Alt+Delete or a PIN: nothing can be typed, whichever button.
+        if let prompt, [.lockScreen, .ctrlAltDel, .pin].contains(prompt) { return prompt.typing(username: username, password: password) }
+        let windows = prompt != nil
+        let userBox = prompt == .signIn(userBox: true) || prompt == .adminPrompt(userBox: true)
+        let enter = windows ? "\n" : ""
+        func user() -> String { windows ? WindowsPrompt.localAccount(username) : username }
+        switch self {
+        case .auto:
+            return prompt?.typing(username: username, password: password) ?? .text(password)
+        case .userAndPassword:
+            guard !username.isEmpty else { return .refuse("That login has no username. Use Password") }
+            return .text(user() + "\t" + password + enter)
+        case .passwordOnly:
+            // The keyboard is in Windows' User name box: the password would show there in plain text.
+            if userBox { return .refuse("Windows is showing a User name box, where a password would show in plain text. Use User + Password") }
+            return .text(password + enter)
+        case .userOnly:
+            guard !username.isEmpty else { return .refuse("That login has no username") }
+            return .text(user())
+        }
+    }
+}
+
 /// Which 1Password login the tech picked on which machine (the ScreenConnect session's name), kept on this Mac so
 /// it comes first next time there, and is suggested on machines whose names start the same (LAB-ROOM12,
 /// LAB-LOBBY). Only the item's id is kept, never a password.

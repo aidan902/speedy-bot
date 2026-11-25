@@ -361,8 +361,8 @@ final class RemoteTypingController {
             let prompt = hosts.isEmpty ? WindowsPrompt.read(lines) : nil
             if let prompt { SpeedyShared.log.notice("1Password: Windows screen \(String(describing: prompt), privacy: .public)") }
             return PageReading(hosts: hosts, windowsNote: prompt?.note)
-        }) { [weak self] item, withUser in
-            self?.typePick(item, withUser: withUser, target: target)
+        }) { [weak self] item, kind in
+            self?.typePick(item, kind: kind, target: target)
         }
     }
 
@@ -398,13 +398,13 @@ final class RemoteTypingController {
             SpeedyShared.log.notice("1Password: picker opened over a browser page on \(host, privacy: .public)")
             let target = PasswordTarget(app: front, window: window, focus: focus.probe, name: "The browser", pageHost: host)
             self.picker.show(place: "\(host) on this Mac", session: "", over: window.map(Self.appKitFrame), target: front,
-                             reading: { PageReading(hosts: [host], windowsNote: nil) }) { [weak self] item, withUser in
-                self?.typePick(item, withUser: withUser, target: target)
+                             reading: { PageReading(hosts: [host], windowsNote: nil) }) { [weak self] item, kind in
+                self?.typePick(item, kind: kind, target: target)
             }
         }
     }
 
-    private func typePick(_ item: OnePassword.Item, withUser: Bool, target: PasswordTarget) {
+    private func typePick(_ item: OnePassword.Item, kind: PickKind, target: PasswordTarget) {
         // From the pick on, Esc stops it (and is not passed on to the remote), as does switching Speedy Bot off.
         pickInFlight = true
         localRun = target.pageHost != nil
@@ -436,7 +436,7 @@ final class RemoteTypingController {
             }
             let password = secrets.password
             if stoppedByTech() { stop("Stopped. Nothing was typed"); return }
-            guard !password.isEmpty else { stop("That item has no password"); return }
+            guard kind == .userOnly || !password.isEmpty else { stop("That item has no password"); return }
             guard !app.isTerminated else { stop("\(target.name) closed. Nothing was typed"); return }
             // Only from Speedy Bot's own search (just closed), the target itself, or 1Password (its Touch ID prompt
             // leaves it in front): if the tech has moved to another app meanwhile, they are doing something else.
@@ -467,20 +467,13 @@ final class RemoteTypingController {
                 if stoppedByTech() { stop("Stopped. Nothing was typed"); return }
             }
             if TextTyper.capsLockOn { stop("Caps Lock is on. Turn it off and press Password again"); return }
-            // What to type: on a Windows sign-in or admin prompt in the session, the user (as this PC's own account)
-            // and password and Enter, or the password and Enter, whatever Return or ⌥Return; elsewhere as asked.
-            var text: String
-            if withUser {
-                guard !secrets.username.isEmpty else { stop("That item has no username. Press Return for the password only"); return }
-                text = secrets.username + "\t" + password
-            } else {
-                text = password
-            }
-            var how = withUser ? " (username and password)" : ""
+            // What to type: the button pressed, fitted to a Windows sign-in or admin prompt in the session (the user as
+            // that PC's own account, then Enter).
+            var prompt: WindowsPrompt?
             if target.pageHost == nil, let screen = target.screen {
                 let lines = await screen.value
-                if OnePassword.pageHosts(in: lines).isEmpty, var prompt = WindowsPrompt.read(lines) {
-                    if prompt == .lockScreen, let windowID = target.windowID {
+                if OnePassword.pageHosts(in: lines).isEmpty, var found = WindowsPrompt.read(lines) {
+                    if found == .lockScreen, let windowID = target.windowID {
                         // A bare Shift tap lifts the lock screen picture; then the screen is read again.
                         WindowsPrompt.wake()
                         try? await Task.sleep(for: .milliseconds(1300))
@@ -489,15 +482,17 @@ final class RemoteTypingController {
                             stop("\(target.name) is no longer in front. Nothing was typed")
                             return
                         }
-                        prompt = WindowsPrompt.read(await SessionProbe.screenLines(windowID: windowID) ?? []) ?? .lockScreen
+                        found = WindowsPrompt.read(await SessionProbe.screenLines(windowID: windowID) ?? []) ?? .lockScreen
                     }
-                    switch prompt.typing(username: secrets.username, password: password) {
-                    case .refuse(let why): stop(why); return
-                    case .text(let t): text = t
-                    }
-                    how = " (Windows \(String(describing: prompt)))"
+                    prompt = found
                 }
             }
+            let text: String
+            switch kind.text(username: secrets.username, password: password, prompt: prompt) {
+            case .refuse(let why): stop(why); return
+            case .text(let t): text = t
+            }
+            let how = " (\(kind.rawValue)\(prompt.map { ", Windows \(String(describing: $0))" } ?? ""))"
             guard !self.typing, let (plan, options) = self.typingPlan(text, secret: true), !plan.keys.isEmpty else { stop(nil); return }
             SpeedyShared.log.notice("1Password: typing a pick into \(target.pageHost == nil ? "the session" : "the browser", privacy: .public)\(how, privacy: .public)")
             self.pickInFlight = false
