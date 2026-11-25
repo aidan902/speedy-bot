@@ -341,7 +341,7 @@ final class RemoteTypingController {
         SpeedyShared.log.notice("1Password: picker opened over the session")
         let windowID = window?.windowID
         let target = PasswordTarget(app: front, window: window, focus: focus.probe, name: "The ScreenConnect session", pageHost: nil)
-        picker.show(place: focus.title ?? "the session", session: focus.title ?? "", over: window.map(Self.appKitFrame), hosts: {
+        picker.show(place: focus.title ?? "the session", session: focus.title ?? "", over: window.map(Self.appKitFrame), target: front, hosts: {
             guard let windowID else { return [] }
             return await OnePassword.remotePageHosts(windowID: windowID)
         }) { [weak self] item, withUser in
@@ -380,7 +380,7 @@ final class RemoteTypingController {
             let window = WindowHitTest.frontWindow(ofPID: pid)
             SpeedyShared.log.notice("1Password: picker opened over a browser page on \(host, privacy: .public)")
             let target = PasswordTarget(app: front, window: window, focus: focus.probe, name: "The browser", pageHost: host)
-            self.picker.show(place: "\(host) on this Mac", session: "", over: window.map(Self.appKitFrame), hosts: { [host] }) { [weak self] item, withUser in
+            self.picker.show(place: "\(host) on this Mac", session: "", over: window.map(Self.appKitFrame), target: front, hosts: { [host] }) { [weak self] item, withUser in
                 self?.typePick(item, withUser: withUser, target: target)
             }
         }
@@ -420,10 +420,15 @@ final class RemoteTypingController {
             guard !password.isEmpty else { stop("That item has no password"); return }
             guard !withUser || !username.isEmpty else { stop("That item has no username. Press Return for the password only"); return }
             guard !app.isTerminated else { stop("\(target.name) closed. Nothing was typed"); return }
-            // Only from Speedy Bot's own search (just closed) or the target itself: if the tech has moved to another
-            // app meanwhile, they are doing something else.
-            let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
-            guard front == me || front == pid else { stop("You moved to another app. Nothing was typed"); return }
+            // Only from Speedy Bot's own search (just closed), the target itself, or 1Password (its Touch ID prompt
+            // leaves it in front): if the tech has moved to another app meanwhile, they are doing something else.
+            let frontApp = NSWorkspace.shared.frontmostApplication
+            let front = frontApp?.processIdentifier
+            guard front == me || front == pid || OnePassword.isAuthorizing(frontApp) else {
+                SpeedyShared.log.notice("1Password: pick stopped, \(frontApp?.bundleIdentifier ?? "another app", privacy: .public) is in front")
+                stop("You moved to another app. Nothing was typed")
+                return
+            }
             // Back to the very window the key was pressed over.
             if let window = target.window { Paster.raise(pid: pid, window: window) }
             Paster.bringBack(app)

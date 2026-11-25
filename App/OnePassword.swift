@@ -37,6 +37,16 @@ enum OnePassword {
         }
     }
 
+    /// 1Password's own app (its Touch ID / authorization prompt brings it to the front) and macOS's Touch ID sheet.
+    /// Being in front because of them is part of the pick, not the tech moving to another app.
+    static func isAuthorizing(_ app: NSRunningApplication?) -> Bool {
+        guard let app else { return false }
+        let id = (app.bundleIdentifier ?? "").lowercased()
+        if id.hasPrefix("com.1password.") || id.hasPrefix("com.agilebits.onepassword") { return true }
+        let path = app.executableURL?.path ?? ""
+        return path.contains("LocalAuthentication") || path.hasSuffix("/SecurityAgent")
+    }
+
     static var cliPath: String? {
         ["/opt/homebrew/bin/op", "/usr/local/bin/op"].first { FileManager.default.isExecutableFile(atPath: $0) }
     }
@@ -407,6 +417,8 @@ final class PasswordPicker: NSObject, NSWindowDelegate {
     private var keyMonitor: Any?
     /// Return was pressed; its pick waits for the key to come up.
     private var returnPending = false
+    /// The app the pick is typed into (the session, or the browser).
+    private var target: NSRunningApplication?
     /// What a pick does: (item, with username).
     private var onPick: ((OnePassword.Item, Bool) -> Void)?
 
@@ -418,10 +430,12 @@ final class PasswordPicker: NSObject, NSWindowDelegate {
 
     /// `place`: where the pick is typed, for the caption. `session`: the ScreenConnect window's name, whose words
     /// rank logins. `over`: the target window's frame (AppKit coordinates), to open the box over it. `hosts`: the
-    /// sites the page may be on, most likely first, read while 1Password lists its logins.
-    func show(place: String, session: String, over: NSRect? = nil, hosts: @escaping @Sendable () async -> [String],
-              onPick: @escaping (OnePassword.Item, Bool) -> Void) {
+    /// sites the page may be on, most likely first, read while 1Password lists its logins. `target`: the app the
+    /// pick is typed into, put back in front if 1Password's prompt took the front.
+    func show(place: String, session: String, over: NSRect? = nil, target: NSRunningApplication? = nil,
+              hosts: @escaping @Sendable () async -> [String], onPick: @escaping (OnePassword.Item, Bool) -> Void) {
         close()
+        self.target = target
         let model = Model(place: place)
         self.model = model
         self.onPick = onPick
@@ -543,6 +557,13 @@ final class PasswordPicker: NSObject, NSWindowDelegate {
     /// 1Password's Touch ID prompt takes the keyboard while it lists, and gives it back to the app in front (the
     /// session), not to this search. The list only arrives once the prompt has closed: take the keyboard back then.
     private func takeKeyboardBack() {
+        // Approving 1Password's prompt leaves 1Password the app in front (its window may be over the session too):
+        // the session goes back in front, as it was when the box opened. Not when the tech went to another app.
+        if let target, !target.isTerminated, NSWorkspace.shared.frontmostApplication?.processIdentifier != target.processIdentifier,
+           OnePassword.isAuthorizing(NSWorkspace.shared.frontmostApplication) {
+            SpeedyShared.log.notice("1Password: its prompt left it in front; the session goes back in front")
+            Paster.bringBack(target)
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             MainActor.assumeIsolated {
                 guard let self, let panel = self.panel, panel.isVisible, !panel.isKeyWindow else { return }
