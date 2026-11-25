@@ -228,12 +228,12 @@ struct MainView: View {
                 }
             }
             HStack(spacing: 8) {
-                RoundToggle(symbol: "checkmark", label: "Auto-send screenshots taken in ScreenConnect", isOn: $state.autoSendFromSession, size: 22, emptyWhenOff: true)
-                Text("Auto-send screenshots taken in ScreenConnect").lineLimit(1).minimumScaleFactor(0.85)
+                RoundToggle(symbol: "checkmark", label: "Auto-send screenshots", isOn: $state.autoSendFromSession, size: 22, emptyWhenOff: true)
+                Text("Auto-send screenshots").lineLimit(1).minimumScaleFactor(0.85)
                 Spacer(minLength: 0)
             }
             if state.autoSendFromSession {
-                Text("With a ScreenConnect session in front and \(state.pasteTargetNames) open on the same desktop, a screenshot is pasted and sent straight away. No pointer move, no Return.")
+                Text("With a ScreenConnect session in front and \(state.pasteTargetNames) open on the same desktop, a screenshot is pasted and sent straight away. No pointer move, no Return. Anywhere else, it is sent as soon as it is pasted. Nothing is sent while you have something typed in the message box (Claude's box cannot be checked).")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if state.pasteTrigger == .shortcut {

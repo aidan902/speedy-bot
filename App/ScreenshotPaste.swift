@@ -153,6 +153,8 @@ enum PasteTrigger: String, CaseIterable, Identifiable {
 @MainActor
 final class ScreenshotPasteController {
     private struct Armed { let id: Int; let ref: ScreenshotRef; let at: Date }
+    /// A paste the tech asks for in the chat app itself: moving onto it, a double- or triple-click (when), the shortcut.
+    private enum ChatAsk { case hover, click(at: Date), shortcut }
 
     private unowned let state: AppState
     private lazy var clipboardWatcher = PasteboardWatcher { [weak self] count, isScreenshot in
@@ -199,7 +201,10 @@ final class ScreenshotPasteController {
     /// The system's corner preview is showing: a screenshot has been taken whose file is not saved yet.
     private var capturePending = false
     /// A click or shortcut trigger that came while that file was still on its way.
-    private var earlyTrigger: (at: Date, byShortcut: Bool)?
+    private var earlyTrigger: (at: Date, byShortcut: Bool, duringCapture: Bool)?
+    /// A screenshot that was to go into the chat WITHOUT being sent (a multi-capture, or the keypad's Paste key) and
+    /// was left ready instead: picking it up by hover, click or shortcut does not send it either.
+    private var keepUnsentID: Int?
     /// What the tech had on the clipboard before a saved screenshot was put there for pasting.
     private var borrow: (snapshot: ClipboardSnapshot, count: Int, token: Int)?
     private var nextBorrowToken = 1
@@ -432,7 +437,7 @@ final class ScreenshotPasteController {
     /// not for an older one that happens to be still waiting.
     private func noteEarlyTrigger(byShortcut: Bool) -> Bool {
         guard previewDelaysFiles, capturePending || armed == nil else { return false }
-        earlyTrigger = (Date(), byShortcut)
+        earlyTrigger = (Date(), byShortcut, capturePending)
         return true
     }
 
@@ -441,8 +446,18 @@ final class ScreenshotPasteController {
         let point = WindowHitTest.pointer()
         guard let target = targetUnderPointer(point), !isCovered(point, target.app, window: target.window.windowID) else { return }
         if noteEarlyTrigger(byShortcut: false) { return }
-        if let armed { paste(into: target.app, window: target.window, armed: armed, pointerMustStay: true) }
+        // A click sends only a fresh screenshot (under a minute old, and never one left for a double-click because it
+        // had got too old for hover): a double-click also selects a word.
+        if let armed {
+            let age = Date().timeIntervalSince(armed.at)
+            paste(into: target.app, window: target.window, armed: armed, pointerMustStay: true,
+                  thenSend: sendsWhenAsked(armed) && age < min(60, hoverMaxAge ?? 60), asked: .click(at: Date()))
+        }
     }
+
+    /// Auto-send for a paste asked for in the chat app (hover, click, shortcut), unless the screenshot was meant to
+    /// stay unsent.
+    private func sendsWhenAsked(_ armed: Armed) -> Bool { autoSendFromSession && keepUnsentID != armed.id }
 
     private func shortcutPressed() {
         guard !pasting else { return }
@@ -452,7 +467,7 @@ final class ScreenshotPasteController {
             Toast.show("Open a \(PasteTarget.names(targets)) window first", seconds: 2.5)
             return
         }
-        paste(into: target.app, window: target.window, armed: armed, pointerMustStay: false)
+        paste(into: target.app, window: target.window, armed: armed, pointerMustStay: false, thenSend: sendsWhenAsked(armed), asked: .shortcut)
     }
 
     /// The chat window under the pointer, else the frontmost window of whichever chosen chat app is open.
@@ -713,11 +728,16 @@ final class ScreenshotPasteController {
         earlyTrigger = nil
         guard let early, Date().timeIntervalSince(early.at) < 10, let armed, !pasting else { return }
         if early.byShortcut {
-            if let target = shortcutTarget() { paste(into: target.app, window: target.window, armed: armed, pointerMustStay: false) }
+            if let target = shortcutTarget() {
+                paste(into: target.app, window: target.window, armed: armed, pointerMustStay: false,
+                      thenSend: early.duringCapture && sendsWhenAsked(armed), asked: .shortcut)
+            }
         } else {
             let point = WindowHitTest.pointer()
             if let target = targetUnderPointer(point), !isCovered(point, target.app, window: target.window.windowID) {
-                paste(into: target.app, window: target.window, armed: armed, pointerMustStay: true)
+                // Sent only when the click came while this screenshot was being taken (not one made before it).
+                paste(into: target.app, window: target.window, armed: armed, pointerMustStay: true,
+                      thenSend: early.duringCapture && sendsWhenAsked(armed), asked: .click(at: early.at))
             }
         }
     }
@@ -806,14 +826,22 @@ final class ScreenshotPasteController {
             dwellTicks = 0
             return
         }
+        // With auto-send on, never the older screenshot while a newer one is being taken (its corner preview up):
+        // that one is the one the tech means, and it replaces this one when it lands.
+        if autoSendFromSession, previewDelaysFiles, capturePending {
+            dwellTicks = 0
+            return
+        }
         dwellTicks += 1
         guard dwellTicks >= dwellNeeded else { return }
         if isCovered(point, target.app, window: target.window.windowID) {
             dwellTicks = 0
             return
         }
-        SpeedyShared.log.notice("pointer moved onto \(PasteTarget.matching(target.app, window: target.window, in: self.targets)?.title ?? "the chat app", privacy: .public); pasting")
-        paste(into: target.app, window: target.window, armed: armed, pointerMustStay: true)
+        SpeedyShared.log.notice("pointer moved onto \(PasteTarget.matching(target.app, window: target.window, in: self.targets)?.title ?? "the chat app", privacy: .public); pasting\(self.autoSendFromSession ? " and sending" : "", privacy: .public)")
+        // With auto-send on, a screenshot pasted by moving onto the chat (or a double-click, or the shortcut) is sent
+        // too, with the same checks as one from a session; the tech is in the chat app, so nothing is handed back.
+        paste(into: target.app, window: target.window, armed: armed, pointerMustStay: true, thenSend: sendsWhenAsked(armed), asked: .hover)
     }
 
     // MARK: paste
@@ -836,7 +864,7 @@ final class ScreenshotPasteController {
     /// Paste and send asked for this one, so it goes whether or not auto-send is switched on.
     private func send(in app: NSRunningApplication, window: CGWindowID, composer: Composer, baselineImages: Int,
                       baselineExtras: Int, relocations: Int, handoff: Date, handedBack: Bool, returnTo: NSRunningApplication?,
-                      token: Int, byKey: Bool) async -> Bool {
+                      token: Int, byKey: Bool, clipboardNote: Bool = false) async -> Bool {
         let name = PasteTarget.matching(app, in: targets)?.title ?? "the chat"
         let pid = app.processIdentifier
         let started = ContinuousClock.now
@@ -983,7 +1011,7 @@ final class ScreenshotPasteController {
                     presses += 1
                     let accepted = await Task.detached { ChatSend.press(SendButton(element: button)) }.value
                     if await confirmSent(composer, window: window, token: token) {
-                        return finish(true, "sent (button)", toast: "Screenshot sent to \(name)")
+                        return finish(true, "sent (button)", toast: clipboardNote ? "Screenshot sent to \(name). It is now on your clipboard too" : "Screenshot sent to \(name)")
                     }
                     if !stillOurs() { continue }
                     SpeedyShared.log.notice("auto-send: press \(presses) not confirmed (accepted=\(accepted))")
@@ -1144,7 +1172,11 @@ final class ScreenshotPasteController {
     }
 
     private func paste(into app: NSRunningApplication, window: WindowUnderPointer, armed: Armed, pointerMustStay: Bool,
-                       thenSend: Bool = false, returnTo: NSRunningApplication? = nil, keyPressedAt: Date? = nil) {
+                       thenSend: Bool = false, returnTo: NSRunningApplication? = nil, keyPressedAt: Date? = nil,
+                       asked: ChatAsk? = nil) {
+        // A multi-capture or the keypad's Paste key: if this is held back and left ready, it stays unsent.
+        if !thenSend, returnTo != nil || keyPressedAt != nil { keepUnsentID = armed.id }
+        let clickedAt: Date = { if case .click(let at) = asked { return at } else { return .distantPast } }()
         pasteGeneration += 1
         let generation = pasteGeneration
         pasting = true
@@ -1280,7 +1312,7 @@ final class ScreenshotPasteController {
                     let settled = await Task.detached { composer.read() }.value
                     // Not if something may have been dropped in since this screenshot came (a drag that was not
                     // taking a screenshot).
-                    if settled.typed == "", self.pendingSends[windowID]?.token == pending.token, !self.droppedSomething(since: armed.at) {
+                    if settled.typed == "", self.pendingSends[windowID]?.token == pending.token, !self.droppedSomething(since: max(armed.at, clickedAt)) {
                         self.pendingSends[windowID]?.images = max(pending.images, settled.images)
                         self.pendingSends[windowID]?.extras = max(pending.extras, settled.extras)
                     }
@@ -1292,14 +1324,14 @@ final class ScreenshotPasteController {
                     // Paste and Return: only text seen in the box (where it can be read at all) holds it back.
                     if let typed = before.typed, !typed.isEmpty {
                         notSentWhy = "draft"
-                    } else if self.droppedSomething(since: max(armed.at, lookStarted.addingTimeInterval(-1))) {
+                    } else if self.droppedSomething(since: max(armed.at, lookStarted.addingTimeInterval(-1), clickedAt)) {
                         notSentWhy = "dropped"
                     } else {
                         blindReturn = true
                     }
                 } else if let why = Self.sendBlocker(before, ours: ours.map { ($0.images, $0.extras) }) {
                     notSentWhy = why
-                } else if self.droppedSomething(since: max(armed.at, lookStarted.addingTimeInterval(-1))) {
+                } else if self.droppedSomething(since: max(armed.at, lookStarted.addingTimeInterval(-1), clickedAt)) {
                     notSentWhy = "dropped"   // a drag just ended: what it dropped may not show in the box yet
                 } else {
                     sendPlan = composer
@@ -1333,6 +1365,7 @@ final class ScreenshotPasteController {
 
             // Only the current ChatGPT app is known to route a paste to its message box from anywhere in the
             // window; its search and rename fields are the places a picture must not go.
+            let pasteBegan = Date()
             let result = await Paster.paste(
                 into: app, window: window, expectedChangeCount: expected,
                 refuseOtherTextFields: target?.refusesOtherTextFields(in: app) ?? false,
@@ -1391,19 +1424,29 @@ final class ScreenshotPasteController {
             case .pasted where thenSend:
                 if !superseded { self.disarm("pasted") }   // never the newer screenshot, which is still to go
                 if blindReturn {
-                    // Claude: give the picture a moment to attach, then press Return, as long as Claude is still in
-                    // front and the tech has not pressed a key or clicked since the paste (that would be theirs).
-                    let pastedAt = Date()
+                    // Claude, or a chat website: give the picture a moment to attach, then press Return, as long as
+                    // the chat app is still in front and the tech has not pressed a key or clicked since the paste
+                    // began (that would be theirs, and keys pressed while it came forward went into its box).
                     try? await Task.sleep(for: .milliseconds(700))
                     // In a browser, Return must go to a message box: on a focused link or button it would click it.
-                    let keyboardInBox = !PasteTarget.isBrowser(app)
-                        || Paster.focusedElementRole(pid: app.processIdentifier) == "AXTextArea"
+                    // And where the box can be read, nothing may have been typed into it: keys pressed while the
+                    // browser was coming forward land there.
+                    var keyboardInBox = true
+                    if PasteTarget.isBrowser(app) {
+                        keyboardInBox = Paster.focusedElementRole(pid: app.processIdentifier) == "AXTextArea"
+                        if keyboardInBox, let box = browserBox {
+                            let typed = await Task.detached { box.read().typed }.value
+                            SpeedyShared.log.notice("auto-send: after the paste the \(name, privacy: .public) box holds \(typed.map { "\($0.count) typed" } ?? "unreadable", privacy: .public)")
+                            if let typed, !typed.isEmpty { keyboardInBox = false }
+                        }
+                    }
                     if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier, keyboardInBox,
-                       !Self.input(since: pastedAt), !TextTyper.physicalModifiersDown(), stillWanted() {
+                       !Self.input(since: pasteBegan), !TextTyper.physicalModifiersDown(), stillWanted() {
                         Paster.postReturn()
                         SpeedyShared.log.notice("auto-send: Return pressed in \(name, privacy: .public) (its message box cannot be read)")
-                        Toast.show("Screenshot sent to \(name)", seconds: 1.4)
-                        if keyPressedAt == nil { self.recentSessionSend = (Date(), -1, true) }
+                        Toast.show(clipboardReplaced ? "Screenshot sent to \(name). It is now on your clipboard too" : "Screenshot sent to \(name)",
+                                   seconds: clipboardReplaced ? 3 : 1.4)
+                        if keyPressedAt == nil, asked == nil { self.recentSessionSend = (Date(), -1, true) }
                     } else {
                         SpeedyShared.log.notice("auto-send: \(name, privacy: .public) left in the paste (the tech was busy, or it was switched off)")
                         Toast.show("Screenshot pasted into \(name), not sent. Press Return in \(name) to send it", seconds: 3.5)
@@ -1424,7 +1467,7 @@ final class ScreenshotPasteController {
                 let token = self.nextSendToken
                 self.nextSendToken += 1
                 let pastedAt = Date()
-                if keyPressedAt == nil { self.recentSessionSend = (pastedAt, token, false) }
+                if keyPressedAt == nil, asked == nil { self.recentSessionSend = (pastedAt, token, false) }
                 self.pendingSends[windowID] = PendingSend(token: token, images: self.pendingSends[windowID]?.images ?? 0,
                                                           extras: self.pendingSends[windowID]?.extras ?? 0, pastedAt: pastedAt)
                 if let returnTo {
@@ -1478,7 +1521,8 @@ final class ScreenshotPasteController {
                 self.donePasting(generation)
                 _ = await self.send(in: app, window: windowID, composer: composer, baselineImages: after.images,
                                     baselineExtras: after.extras, relocations: composer.relocations, handoff: handoff,
-                                    handedBack: handedBack, returnTo: returnTo, token: token, byKey: keyPressedAt != nil)
+                                    handedBack: handedBack, returnTo: returnTo, token: token, byKey: keyPressedAt != nil,
+                                    clipboardNote: clipboardReplaced)
             case .pasted:
                 self.disarm("pasted")
                 if let returnTo {
