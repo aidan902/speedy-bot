@@ -231,7 +231,8 @@ final class ScreenshotPasteController {
     private var nextSendToken = 1
     /// A session screenshot that arrived while another paste was under way: pasted once that paste is done, if it
     /// is still the screenshot waiting.
-    private var deferredAutoSend: (armedID: Int, returnTo: NSRunningApplication?, multi: Bool, at: Date, anywhere: Bool)?
+    private var deferredAutoSend: (armedID: Int, returnTo: NSRunningApplication?, multi: Bool, at: Date, anywhere: Bool,
+                                   backWindow: WindowUnderPointer?)?
     /// A keypad paste waiting for the session-window capture it started (or one already under way when the key was
     /// pressed), for up to 8 s. Only that capture goes into the chat app this way (sent or not), and only while the
     /// app that was in front at the press still is; the capture failing, Off or another key drops it.
@@ -251,6 +252,9 @@ final class ScreenshotPasteController {
     /// The app in front when the screenshot tool last came up (where that screenshot was taken), and when: a file
     /// the corner preview held back lands seconds later, wherever the tech is by then.
     private var captureStarted: (inSession: Bool, at: Date)?
+    /// Where the latest screenshot was taken, noted while its tool and corner preview were up: the app in front when
+    /// the tool came up, that app's front window, and whether the pointer was on a chat window meanwhile.
+    private var captureOrigin: (at: Date, app: NSRunningApplication?, windowID: CGWindowID?, chatSeen: Bool)?
     /// The app in front at the last look while the tool was not up.
     private var frontBeforeTool: NSRunningApplication?
     /// The latest screenshot file, whether or not it is still waiting: a second display's file of the same capture
@@ -376,6 +380,10 @@ final class ScreenshotPasteController {
             if !captureToolUp {
                 let where_ = frontBeforeTool ?? NSWorkspace.shared.frontmostApplication
                 captureStarted = (where_.map(FrontmostAppGate.isScreenConnect) ?? false, Date())
+                captureOrigin = (Date(), where_, where_.flatMap { WindowHitTest.frontWindow(ofPID: $0.processIdentifier)?.windowID }, false)
+            }
+            if pasteEnabled, autoMCP, autoSendFromSession, captureOrigin?.chatSeen == false, targetUnderPointer() != nil {
+                captureOrigin?.chatSeen = true
             }
             lastCaptureToolAt = Date()
         } else {
@@ -697,51 +705,79 @@ final class ScreenshotPasteController {
             }
             // Auto MCP with auto-send: a screenshot taken anywhere else goes straight to the chat the pointer was last
             // in, is sent, and the app the tech was in comes back.
-            if lastChatTarget(front: front) != nil {
+            if let decided = lastChatTarget(front: front, armed: armed) {
                 if pasting {
-                    deferredAutoSend = (armed.id, front, false, Date(), true)
+                    deferredAutoSend = (armed.id, decided.back, false, Date(), true, decided.backWindow)
                 } else {
-                    runLastChatPaste(returnTo: front)
+                    runLastChatPaste(decided.target, back: decided.back, backWindow: decided.backWindow)
                 }
             }
             return
         }
         if pasting {
             // Another paste is under way; this one goes once that is done (if it is still the one waiting).
-            deferredAutoSend = (armed.id, session, multi, Date(), false)
+            deferredAutoSend = (armed.id, session, multi, Date(), false, nil)
             return
         }
         runSessionPaste(returnTo: session, multi: multi)
     }
 
-    /// Auto MCP and auto-send both on, and a screenshot taken outside a session: the chat window the pointer was last
-    /// in, if it is still on screen (and a browser's still shows the chat app's website). Never for a screenshot of the
-    /// chat itself: not with the pointer on a chat window, nor with that chat app in front now or when the screenshot
-    /// was taken, nor with any chat app in front when it was taken.
-    private func lastChatTarget(front: NSRunningApplication?) -> (app: NSRunningApplication, window: WindowUnderPointer)? {
-        guard autoMCP, autoSendFromSession, pasteEnabled, let last = lastChat,
-              let app = NSRunningApplication(processIdentifier: last.pid), !app.isTerminated,
-              let window = WindowHitTest.window(id: last.windowID, ofPID: last.pid),
-              PasteTarget.matching(app, window: window, in: targets) != nil else { return nil }
-        if targetUnderPointer() != nil { return nil }
-        let takenIn = frontBeforeTool ?? front
-        for candidate in [front, takenIn].compactMap({ $0 }) {
-            if candidate.processIdentifier == app.processIdentifier { return nil }
-            if !PasteTarget.isBrowser(candidate), PasteTarget.matching(candidate, in: targets) != nil { return nil }
-            if PasteTarget.isBrowser(candidate), let w = WindowHitTest.frontWindow(ofPID: candidate.processIdentifier),
-               PasteTarget.matching(candidate, window: w, in: targets) != nil { return nil }
+    /// The chat window the pointer was last in; before it has been in one since Speedy Bot started, or when that window
+    /// has gone, that chat app's front window or else the nearest chat window on screen (a browser's only while it
+    /// shows the chat app's website).
+    private func lastChatWindow() -> (app: NSRunningApplication, window: WindowUnderPointer)? {
+        if let last = lastChat, let app = NSRunningApplication(processIdentifier: last.pid), !app.isTerminated {
+            let window = WindowHitTest.window(id: last.windowID, ofPID: last.pid)
+                ?? (PasteTarget.isBrowser(app) ? nil : WindowHitTest.frontWindow(ofPID: last.pid))
+            if let window, PasteTarget.matching(app, window: window, in: targets) != nil { return (app, window) }
         }
-        return (app, window)
+        for window in WindowHitTest.onScreenWindows() {
+            guard let app = NSRunningApplication(processIdentifier: window.ownerPID),
+                  PasteTarget.matching(app, window: window, in: targets) != nil else { continue }
+            return (app, window)
+        }
+        return nil
     }
 
-    private func runLastChatPaste(returnTo front: NSRunningApplication?) {
-        guard let armed, let target = lastChatTarget(front: front) else { return }
+    /// Auto MCP and auto-send both on, and a screenshot taken outside a session, in another app: where it goes (the
+    /// chat last used), and the app and window to come back to. Never for a screenshot of the chat itself: not with
+    /// the pointer on a chat window now or while the screenshot was being taken, nor with a chat in front (a chat app,
+    /// or a browser window showing a chat website) now or when it was taken. Not from Speedy Bot's own window, and
+    /// not for a saved file that only landed because a newer screenshot was started (that one is the one meant).
+    private func lastChatTarget(front: NSRunningApplication?, armed: Armed)
+        -> (target: (app: NSRunningApplication, window: WindowUnderPointer), back: NSRunningApplication, backWindow: WindowUnderPointer?)? {
+        guard autoMCP, autoSendFromSession, pasteEnabled, let front, !front.isTerminated,
+              front.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+              let target = lastChatWindow() else { return nil }
+        if targetUnderPointer() != nil { return nil }
+        let origin = captureOrigin.flatMap { Date().timeIntervalSince($0.at) < 30 ? $0 : nil }
+        if origin?.chatSeen == true { return nil }
+        if previewDelaysFiles, case .file = armed.ref, let origin, armed.at.timeIntervalSince(origin.at) < 1 { return nil }
+        // A chat in front: the app itself, or the browser window the tech is in.
+        func isChat(_ app: NSRunningApplication, windowID: CGWindowID?) -> Bool {
+            guard PasteTarget.isBrowser(app) else { return PasteTarget.matching(app, in: targets) != nil }
+            guard let w = windowID.flatMap({ WindowHitTest.window(id: $0, ofPID: app.processIdentifier) })
+                    ?? WindowHitTest.frontWindow(ofPID: app.processIdentifier) else { return false }
+            return w.windowID == target.window.windowID || PasteTarget.matching(app, window: w, in: targets) != nil
+        }
+        let frontWindow = WindowHitTest.frontWindow(ofPID: front.processIdentifier)
+        if isChat(front, windowID: frontWindow?.windowID) { return nil }
+        if let takenIn = origin?.app ?? frontBeforeTool, isChat(takenIn, windowID: origin?.app == nil ? nil : origin?.windowID) { return nil }
+        // Another window of the browser the chat website is open in: that window comes back afterwards.
+        let backWindow = front.processIdentifier == target.app.processIdentifier ? frontWindow : nil
+        return (target, front, backWindow)
+    }
+
+    /// Pastes a screenshot taken outside a session into the chat last used and sends it; the app (and, in the chat's
+    /// own browser, the window) the tech was in comes back. Decided when the screenshot came; a run held back behind
+    /// another paste only finds the chat window again.
+    private func runLastChatPaste(_ target: (app: NSRunningApplication, window: WindowUnderPointer)?, back: NSRunningApplication?,
+                                  backWindow: WindowUnderPointer?) {
+        guard let armed, let target = target ?? lastChatWindow() else { return }
         let name = PasteTarget.matching(target.app, window: target.window, in: targets)?.title ?? "the chat"
         SpeedyShared.log.notice("Auto MCP: screenshot taken outside a session; pasting into \(name, privacy: .public) and sending")
-        // Not back to Speedy Bot's own window or to nothing: then the chat app simply stays in front.
-        let back = front.flatMap { $0.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : $0 }
         paste(into: target.app, window: target.window, armed: armed, pointerMustStay: false, thenSend: true, returnTo: back,
-              asked: .lastChat)
+              asked: .lastChat, returnWindow: backWindow)
     }
 
     private func runSessionPaste(returnTo session: NSRunningApplication?, multi: Bool) {
@@ -1183,7 +1219,7 @@ final class ScreenshotPasteController {
             return
         }
         if deferred.anywhere {
-            runLastChatPaste(returnTo: deferred.returnTo)
+            runLastChatPaste(nil, back: deferred.returnTo, backWindow: deferred.backWindow)
         } else {
             runSessionPaste(returnTo: deferred.returnTo, multi: deferred.multi)
         }
@@ -1205,11 +1241,12 @@ final class ScreenshotPasteController {
 
     /// A paste from a session that is not handing over to a send: the session comes back to the front (after a
     /// moment for the picture to land), so the tech's next keys do not go into the chat app's message box.
-    private func giveSessionBack(_ session: NSRunningApplication?, from chat: NSRunningApplication) {
+    private func giveSessionBack(_ session: NSRunningApplication?, from chat: NSRunningApplication, window: WindowUnderPointer? = nil) {
         guard let session, !session.isTerminated else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
             MainActor.assumeIsolated {
                 guard !session.isTerminated, NSWorkspace.shared.frontmostApplication?.processIdentifier == chat.processIdentifier else { return }
+                if let window, window.ownerPID == session.processIdentifier { Paster.raise(pid: session.processIdentifier, window: window) }
                 Paster.bringBack(session)
             }
         }
@@ -1227,7 +1264,7 @@ final class ScreenshotPasteController {
 
     private func paste(into app: NSRunningApplication, window: WindowUnderPointer, armed: Armed, pointerMustStay: Bool,
                        thenSend: Bool = false, returnTo: NSRunningApplication? = nil, keyPressedAt: Date? = nil,
-                       asked: ChatAsk? = nil) {
+                       asked: ChatAsk? = nil, returnWindow: WindowUnderPointer? = nil) {
         // A multi-capture or the keypad's Paste key: if this is held back and left ready, it stays unsent.
         if !thenSend, returnTo != nil || keyPressedAt != nil { keepUnsentID = armed.id }
         let clickedAt: Date = { if case .click(let at) = asked { return at } else { return .distantPast } }()
@@ -1240,6 +1277,14 @@ final class ScreenshotPasteController {
             let name = target?.title ?? "the chat"
             let windowID = window.windowID
             var borrowToken: Int?
+            /// Back to where the tech was: the app, and in the chat's own browser the window they were in.
+            @MainActor func handBack(_ back: NSRunningApplication) {
+                if let returnWindow, returnWindow.ownerPID == back.processIdentifier, !back.isTerminated {
+                    Paster.raise(pid: back.processIdentifier, window: returnWindow)
+                }
+                Paster.bringBack(back)
+            }
+
             /// Not now after all: the screenshot stays ready for a move to the chat app. If an earlier paste of ours
             /// left the chat app in front over the session, the session comes back.
             @MainActor func leaveReady(_ why: String, toast: String?) {
@@ -1247,7 +1292,7 @@ final class ScreenshotPasteController {
                 if let borrowToken { self.returnBorrowedClipboard(token: borrowToken) }
                 if let returnTo, !returnTo.isTerminated, let recent = self.recentAutoPaste, recent.chatPID == app.processIdentifier,
                    Date() < recent.until.addingTimeInterval(5), NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier {
-                    Paster.bringBack(returnTo)
+                    handBack(returnTo)
                 }
                 if let toast { Toast.show(toast, seconds: 2.5) }
                 if self.armed?.id == armed.id { self.dwellTicks = 0; self.startHoverTimer() }
@@ -1474,7 +1519,7 @@ final class ScreenshotPasteController {
                     Toast.show("That screenshot was replaced on the clipboard before it could be pasted", seconds: 2.5)
                 }
                 // Unless a paste of ours follows straight away, the session comes back to the front.
-                if self.deferredAutoSend == nil, self.deferredKeyPaste == nil { self.giveSessionBack(returnTo, from: app) }
+                if self.deferredAutoSend == nil, self.deferredKeyPaste == nil { self.giveSessionBack(returnTo, from: app, window: returnWindow) }
                 if self.armed != nil { self.dwellTicks = 0; self.startHoverTimer() }
                 self.donePasting(generation)
                 return
@@ -1510,7 +1555,10 @@ final class ScreenshotPasteController {
                         SpeedyShared.log.notice("auto-send: \(name, privacy: .public) left in the paste (the tech was busy, or it was switched off)")
                         Toast.show(withNote("Screenshot pasted into \(name), not sent. Press Return in \(name) to send it"), seconds: 3.5)
                     }
-                    if let returnTo, !returnTo.isTerminated { Paster.bringBack(returnTo) }
+                    if let returnTo, !returnTo.isTerminated {
+                        handBack(returnTo)
+                        self.recentAutoPaste = (returnTo, app.processIdentifier, Date().addingTimeInterval(1))
+                    }
                     break
                 }
                 guard let composer = sendPlan else {
@@ -1519,7 +1567,7 @@ final class ScreenshotPasteController {
                                : notSentWhy == "draft" ? "Screenshot pasted into \(name). There is already a message in progress, so it was not sent"
                                : notSentWhy == "dropped" ? "Screenshot pasted into \(name), not sent: something may have been dropped into the message box"
                                : "Screenshot pasted into \(name), not sent. Send it from \(name)"), seconds: 4)
-                    self.giveSessionBack(returnTo, from: app)
+                    self.giveSessionBack(returnTo, from: app, window: returnWindow)
                     break
                 }
                 // An earlier auto-send waiting in this window stands down now; this one takes it all.
@@ -1552,7 +1600,7 @@ final class ScreenshotPasteController {
                                                            : "Screenshot pasted into \(name), not sent: some typing went into the message box"), seconds: 4)
                     // The tech was working in the session: their next keys belong there, not in the chat app.
                     if let returnTo, !returnTo.isTerminated, NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier {
-                        Paster.bringBack(returnTo)
+                        handBack(returnTo)
                     }
                     break
                 }
@@ -1562,7 +1610,7 @@ final class ScreenshotPasteController {
                     self.pendingSends[windowID] = nil
                     SpeedyShared.log.notice("auto-send: the message box changed before the paste; not sent")
                     Toast.show(withNote("Screenshot pasted into \(name), not sent: the conversation changed. Send it from \(name)"), seconds: 4)
-                    if let returnTo, !returnTo.isTerminated { Paster.bringBack(returnTo) }
+                    if let returnTo, !returnTo.isTerminated { handBack(returnTo) }
                     break
                 }
                 self.pendingSends[windowID]?.images = after.images
@@ -1572,7 +1620,7 @@ final class ScreenshotPasteController {
                 var handoff = pastedAt
                 var handedBack = false
                 if let returnTo, !returnTo.isTerminated {
-                    Paster.bringBack(returnTo)
+                    handBack(returnTo)
                     handoff = Date()
                     handedBack = true
                     self.recentAutoPaste = (returnTo, app.processIdentifier, Date().addingTimeInterval(1))
@@ -1587,7 +1635,7 @@ final class ScreenshotPasteController {
                 if let returnTo {
                     // Multi-capture: give the MCP a moment to take the picture, then back to the session.
                     try? await Task.sleep(for: .milliseconds(350))
-                    Paster.bringBack(returnTo)
+                    handBack(returnTo)
                     Toast.show("Added to the message in \(name). Send it when you have them all", seconds: 2)
                 } else if earlierWaiting {
                     Toast.show("Screenshot pasted into \(name). The one before it was not sent either; send them from \(name)", seconds: 4)
@@ -1608,21 +1656,21 @@ final class ScreenshotPasteController {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                         MainActor.assumeIsolated {
                             if !self.pasting, NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier {
-                                Paster.bringBack(returnTo)
+                                handBack(returnTo)
                             }
                         }
                     }
                 }
             case .otherFieldFocused where returnTo != nil:
                 // From a session: the tech is not in the chat app to click its message box. Ready for a move there.
-                self.giveSessionBack(returnTo, from: app)
+                self.giveSessionBack(returnTo, from: app, window: returnWindow)
                 Toast.show("Screenshot not pasted: \(name) had another field selected. Move to \(name) to paste it", seconds: 3)
                 self.sawPointerElsewhere = false
                 self.dwellTicks = 0
                 self.startHoverTimer()
             case .pointerLeft where returnTo != nil:
                 // The tech typed or clicked just before the paste keystroke: nothing went in, the session comes back.
-                self.giveSessionBack(returnTo, from: app)
+                self.giveSessionBack(returnTo, from: app, window: returnWindow)
                 Toast.show(ready, seconds: 2.5)
                 self.sawPointerElsewhere = false
                 self.dwellTicks = 0
@@ -1646,7 +1694,7 @@ final class ScreenshotPasteController {
             case .modifiersHeld, .activationTimedOut:
                 // Nothing went in. A paste from the session gives the session back, and says so.
                 if let returnTo {
-                    if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier { Paster.bringBack(returnTo) }
+                    if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier { handBack(returnTo) }
                     Toast.show(result == .modifiersHeld ? "Screenshot not pasted: a key was held down. Move to \(name) to paste it"
                                                         : "Screenshot not pasted: \(name) did not come forward. Move to \(name) to paste it", seconds: 3)
                 }

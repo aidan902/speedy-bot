@@ -95,7 +95,7 @@ public enum Paster {
     // MARK: activation
 
     /// Raise one specific window and make its app frontmost. Needs Accessibility, which the app holds anyway.
-    static func raise(pid: pid_t, window target: WindowUnderPointer) {
+    public static func raise(pid: pid_t, window target: WindowUnderPointer) {
         if let w = axWindow(pid: pid, for: target) {
             AXUIElementPerformAction(w, kAXRaiseAction as CFString)
             AXUIElementSetAttributeValue(w, kAXMainAttribute as CFString, kCFBooleanTrue)
