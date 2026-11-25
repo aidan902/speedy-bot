@@ -80,9 +80,9 @@ final class AppState: ObservableObject {
     @Published private(set) var captureShortcut: HotKeySpec?
     /// A screenshot taken while in a ScreenConnect session is pasted into the chat and sent straight away.
     @Published var autoSendFromSession: Bool { didSet { changed(SpeedyShared.autoSendFromSessionKey, autoSendFromSession) } }
-    /// Auto MCP: a screenshot goes to whichever of the ticked chat apps the pointer was last over.
+    /// Auto LLM: a screenshot goes to whichever of the ticked chat apps the pointer was last over.
     @Published var autoMCP: Bool { didSet { changed(SpeedyShared.autoMCPKey, autoMCP) } }
-    /// Window captures (⇧⌘2) go straight into the MCP's message box, not sent, so several can go in one message.
+    /// Window captures (⇧⌘2) go straight into the LLM's message box, not sent, so several can go in one message.
     @Published var multiCapture: Bool { didSet { changed(SpeedyShared.multiCaptureKey, multiCapture) } }
     /// The chat apps a screenshot may be pasted into. Always at least one.
     @Published var pasteTargets: Set<PasteTarget> {
@@ -94,6 +94,28 @@ final class AppState: ObservableObject {
         }
     }
     var pasteTargetNames: String { PasteTarget.names(pasteTargets) }
+    /// Which chat app is chosen first when several are open and none was just used (or Auto LLM is off).
+    @Published var chatPriority: [PasteTarget] {
+        didSet {
+            guard !reloading, chatPriority != oldValue else { return }
+            SpeedyShared.defaults.set(chatPriority.map(\.rawValue), forKey: SpeedyShared.chatPriorityKey)
+            apply()
+        }
+    }
+    /// Where Grok is chosen first: its own app or grok.com in one of the browsers.
+    @Published var placePriority: [String] {
+        didSet {
+            guard !reloading, placePriority != oldValue else { return }
+            SpeedyShared.defaults.set(placePriority, forKey: SpeedyShared.browserPriorityKey)
+            apply()
+        }
+    }
+
+    /// Moves one entry of a priority order up one place.
+    func raisePriority<T: Equatable>(_ item: T, in order: inout [T]) {
+        guard let i = order.firstIndex(of: item), i > 0 else { return }
+        order.swapAt(i, i - 1)
+    }
     /// The shortcut for the keyboard-shortcut paste trigger (nil until the tech records one).
     @Published private(set) var pasteShortcut: HotKeySpec?
     /// The tech's own shortcut for typing into a session (nil = the standard ⌘⇧V).
@@ -153,6 +175,10 @@ final class AppState: ObservableObject {
         autoMCP = SpeedyShared.bool(SpeedyShared.autoMCPKey, default: false)
         let storedTargets = (SpeedyShared.defaults.stringArray(forKey: SpeedyShared.pasteTargetsKey) ?? []).compactMap(PasteTarget.init(rawValue:))
         pasteTargets = storedTargets.isEmpty ? [.chatGPT] : Set(storedTargets)
+        let storedChats = (SpeedyShared.defaults.stringArray(forKey: SpeedyShared.chatPriorityKey) ?? []).compactMap(PasteTarget.init(rawValue:))
+        chatPriority = storedChats + PasteTarget.allCases.filter { !storedChats.contains($0) }
+        let storedPlaces = (SpeedyShared.defaults.stringArray(forKey: SpeedyShared.browserPriorityKey) ?? []).filter(PasteTarget.defaultPlaces.contains)
+        placePriority = storedPlaces + PasteTarget.defaultPlaces.filter { !storedPlaces.contains($0) }
         typingShortcut = HotKeySpec.load(.typing).flatMap { $0.leavesBareModifierTapOnRemote ? nil : $0 }
         let storedIncident = SpeedyShared.defaults.string(forKey: SpeedyShared.incidentKey) ?? ""
         incident = storedIncident
@@ -301,8 +327,8 @@ final class AppState: ObservableObject {
             return
         case .autoMCP:
             autoMCP.toggle()
-            Toast.show(autoMCP ? "Auto MCP on: screenshots go to whichever of \(pasteTargetNames) the pointer was last over"
-                               : "Auto MCP off: screenshots go to \(pasteTargetNames)", seconds: 2.2)
+            Toast.show(autoMCP ? "Auto LLM on: screenshots go to whichever of \(pasteTargetNames) the pointer was last over"
+                               : "Auto LLM off: screenshots go to \(pasteTargetNames)", seconds: 2.2)
             return
         case .ticket:
             // After this notification has been handled: the popup runs its own loop until it is answered.
@@ -366,7 +392,7 @@ final class AppState: ObservableObject {
             "pid": Int(ProcessInfo.processInfo.processIdentifier),
             "version": Updater.currentVersion,
             "updatedAt": Int(Date().timeIntervalSince1970),
-            // For the keypad's setting keys: auto-send, Auto MCP, and the ticket number.
+            // For the keypad's setting keys: auto-send, Auto LLM, and the ticket number.
             "autoSend": autoSendFromSession,
             "autoMCP": autoMCP,
             "incident": incident,
@@ -392,6 +418,8 @@ final class AppState: ObservableObject {
     private func apply() {
         screenshot.trigger = pasteTrigger
         screenshot.targets = pasteTargets
+        screenshot.chatPriority = chatPriority
+        screenshot.placePriority = placePriority
         screenshot.autoMCP = autoMCP
         screenshot.autoSendFromSession = autoSendFromSession
         screenshot.multiCapture = multiCapture

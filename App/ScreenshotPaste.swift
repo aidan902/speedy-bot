@@ -40,6 +40,21 @@ enum PasteTarget: String, CaseIterable, Identifiable {
     static let browserBundleIDs: Set<String> = ["com.apple.Safari", "com.google.Chrome", "company.thebrowser.Browser",
                                                 "com.brave.Browser", "com.microsoft.edgemac"]
     static func isBrowser(_ app: NSRunningApplication) -> Bool { browserBundleIDs.contains(app.bundleIdentifier ?? "") }
+    /// Where a chat can be open, for the priority order: the chat app's own app ("app"), then the browsers.
+    static let appPlace = "app"
+    static let defaultPlaces = [appPlace, "com.google.Chrome", "com.apple.Safari", "company.thebrowser.Browser",
+                                "com.brave.Browser", "com.microsoft.edgemac"]
+    static func placeName(_ place: String) -> String {
+        switch place {
+        case appPlace: return "Grok app"
+        case "com.google.Chrome": return "Chrome"
+        case "com.apple.Safari": return "Safari"
+        case "company.thebrowser.Browser": return "Arc"
+        case "com.brave.Browser": return "Brave"
+        case "com.microsoft.edgemac": return "Edge"
+        default: return place
+        }
+    }
     /// Chrome and the other Chromium browsers show a page to accessibility only once asked (the switch the ChatGPT
     /// app needs too); Safari always does.
     static func showsPageOnlyWhenAsked(_ app: NSRunningApplication) -> Bool {
@@ -138,9 +153,9 @@ enum PasteTrigger: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .hover: return "Pointer moves onto MCP(s)"
-        case .doubleClick: return "Double-click in MCP(s)"
-        case .tripleClick: return "Triple-click in MCP(s)"
+        case .hover: return "Pointer moves onto LLM(s)"
+        case .doubleClick: return "Double-click in LLM(s)"
+        case .tripleClick: return "Triple-click in LLM(s)"
         case .shortcut: return "Keyboard shortcut"
         }
     }
@@ -191,7 +206,11 @@ final class ScreenshotPasteController {
     var trigger = PasteTrigger.hover { didSet { syncTriggers() } }
     /// Which chat apps count. Always at least one.
     var targets: Set<PasteTarget> = [.chatGPT] { didSet { if targets != oldValue { releaseIfIdle(); primeChatApps() } } }
-    /// Auto MCP: the chat window the pointer was last over is where a screenshot goes (when the pointer is not on one).
+    /// Which chat app is chosen first, and where (Grok's own app or a browser), when several are open and none was
+    /// just used.
+    var chatPriority: [PasteTarget] = PasteTarget.allCases
+    var placePriority: [String] = PasteTarget.defaultPlaces
+    /// Auto LLM: the chat window the pointer was last over is where a screenshot goes (when the pointer is not on one).
     var autoMCP = false
     /// The chat window the pointer was last over (for at least a moment), and the one it is over now.
     private var lastChat: (pid: pid_t, windowID: CGWindowID)?
@@ -277,7 +296,7 @@ final class ScreenshotPasteController {
     private var launchObserver: NSObjectProtocol?
     /// The last moment a ScreenConnect session was the app in front (or its window was captured with the shortcut).
     private var sessionInFrontAt = Date.distantPast
-    /// Multi-capture: every window capture (the ⇧⌘2 shortcut) goes straight into the MCP's message box, NOT sent,
+    /// Multi-capture: every window capture (the ⇧⌘2 shortcut) goes straight into the LLM's message box, NOT sent,
     /// and focus comes back to the session, so several captures can be gathered into one message.
     var multiCapture = false
     private var sessionCaptureAt = Date.distantPast
@@ -494,20 +513,30 @@ final class ScreenshotPasteController {
     /// The chat window under the pointer, else the frontmost window of whichever chosen chat app is open.
     private func shortcutTarget() -> (app: NSRunningApplication, window: WindowUnderPointer)? {
         if let target = targetUnderPointer() { return target }
-        // Auto MCP: the chat window the pointer was last over, while it is still open (and a browser's still shows
+        // Auto LLM: the chat window the pointer was last over, while it is still open (and a browser's still shows
         // the chat app's website).
         if autoMCP, let last = lastChat, let app = NSRunningApplication(processIdentifier: last.pid), !app.isTerminated {
             let window = WindowHitTest.window(id: last.windowID, ofPID: last.pid)
                 ?? (PasteTarget.isBrowser(app) ? nil : WindowHitTest.frontWindow(ofPID: last.pid))
             if let window, PasteTarget.matching(app, window: window, in: targets) != nil { return (app, window) }
         }
-        // The chat window nearest the front: a chat app's, or a browser tab with a chat app's website (grok.com).
-        for window in WindowHitTest.onScreenWindows() {
+        // Else the open chat window the priority order puts first.
+        return preferredChatWindow()
+    }
+
+    /// Of the chat windows on screen (a chat app's, or a browser window showing a chat app's website), the one the
+    /// priority order puts first: by chat app, then by where it is open (Grok's own app or a browser), then the one
+    /// nearest the front.
+    private func preferredChatWindow() -> (app: NSRunningApplication, window: WindowUnderPointer)? {
+        var best: (rank: (Int, Int, Int), app: NSRunningApplication, window: WindowUnderPointer)?
+        for (depth, window) in WindowHitTest.onScreenWindows().enumerated() {
             guard let app = NSRunningApplication(processIdentifier: window.ownerPID),
-                  PasteTarget.matching(app, window: window, in: targets) != nil else { continue }
-            return (app, window)
+                  let target = PasteTarget.matching(app, window: window, in: targets) else { continue }
+            let place = PasteTarget.isBrowser(app) ? (app.bundleIdentifier ?? "") : PasteTarget.appPlace
+            let rank = (chatPriority.firstIndex(of: target) ?? 99, placePriority.firstIndex(of: place) ?? 99, depth)
+            if best == nil || rank < best!.rank { best = (rank, app, window) }
         }
-        return nil
+        return best.map { ($0.app, $0.window) }
     }
 
     /// The window list only knows ordinary windows. A menu, popover or floating panel over ChatGPT belongs to
@@ -710,7 +739,7 @@ final class ScreenshotPasteController {
                 Toast.show("Screenshot ready. Move to \(PasteTarget.names(targets)) to paste it", seconds: 2.5)
                 return
             }
-            // Auto MCP with auto-send: a screenshot taken anywhere else goes straight to the chat the pointer was last
+            // Auto LLM with auto-send: a screenshot taken anywhere else goes straight to the chat the pointer was last
             // in, is sent, and the app the tech was in comes back.
             if let decided = lastChatTarget(front: front, armed: armed) {
                 if pasting {
@@ -740,23 +769,18 @@ final class ScreenshotPasteController {
     }
 
     /// The chat window the pointer was last in; before it has been in one since Speedy Bot started, or when that window
-    /// has gone, that chat app's front window or else the nearest chat window on screen (a browser's only while it
-    /// shows the chat app's website).
+    /// has gone, that chat app's front window or else the open chat window the priority order puts first (a browser's
+    /// only while it shows the chat app's website).
     private func lastChatWindow() -> (app: NSRunningApplication, window: WindowUnderPointer)? {
         if let last = lastChat, let app = NSRunningApplication(processIdentifier: last.pid), !app.isTerminated {
             let window = WindowHitTest.window(id: last.windowID, ofPID: last.pid)
                 ?? (PasteTarget.isBrowser(app) ? nil : WindowHitTest.frontWindow(ofPID: last.pid))
             if let window, PasteTarget.matching(app, window: window, in: targets) != nil { return (app, window) }
         }
-        for window in WindowHitTest.onScreenWindows() {
-            guard let app = NSRunningApplication(processIdentifier: window.ownerPID),
-                  PasteTarget.matching(app, window: window, in: targets) != nil else { continue }
-            return (app, window)
-        }
-        return nil
+        return preferredChatWindow()
     }
 
-    /// Auto MCP and auto-send both on, and a screenshot taken outside a session, in another app: where it goes (the
+    /// Auto LLM and auto-send both on, and a screenshot taken outside a session, in another app: where it goes (the
     /// chat last used), and the app and window to come back to. Never for a screenshot of the chat itself: not with
     /// the pointer on a chat window now or while the screenshot was being taken, nor with a chat in front (a chat app,
     /// or a browser window showing a chat website) now or when it was taken. Not from Speedy Bot's own window, and
@@ -792,7 +816,7 @@ final class ScreenshotPasteController {
                                   backWindow: WindowUnderPointer?) {
         guard autoMCP, autoSendFromSession, pasteEnabled, let armed, let target = target ?? lastChatWindow() else { return }
         let name = PasteTarget.matching(target.app, window: target.window, in: targets)?.title ?? "the chat"
-        SpeedyShared.log.notice("Auto MCP: screenshot taken outside a session; pasting into \(name, privacy: .public) and sending")
+        SpeedyShared.log.notice("Auto LLM: screenshot taken outside a session; pasting into \(name, privacy: .public) and sending")
         paste(into: target.app, window: target.window, armed: armed, pointerMustStay: false, thenSend: true, returnTo: back,
               asked: .lastChat, returnWindow: backWindow)
     }
@@ -1716,7 +1740,7 @@ final class ScreenshotPasteController {
             case .pasted:
                 self.disarm("pasted")
                 if let returnTo {
-                    // Multi-capture: give the MCP a moment to take the picture, then back to the session.
+                    // Multi-capture: give the LLM a moment to take the picture, then back to the session.
                     try? await Task.sleep(for: .milliseconds(350))
                     handBack(returnTo)
                     Toast.show("Added to the message in \(name). Send it when you have them all", seconds: 2)

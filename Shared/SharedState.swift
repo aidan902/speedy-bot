@@ -27,9 +27,13 @@ enum SpeedyShared {
     static let pasteTargetsKey = "pasteTargets"
     /// A screenshot taken while in a ScreenConnect session is pasted into the chat and sent, with no trigger.
     static let autoSendFromSessionKey = "autoSendFromSession"
-    /// Auto MCP: a screenshot goes to whichever of the ticked chat apps the pointer was last over.
+    /// Auto LLM: a screenshot goes to whichever of the ticked chat apps the pointer was last over.
     static let autoMCPKey = "autoMCP"
-    /// Window captures go into the MCP's message box without being sent, so several can be gathered.
+    /// The order chat apps are chosen in when several are open and none was just used ("chatGPT", "claude", "grok").
+    static let chatPriorityKey = "chatPriority"
+    /// The order Grok is chosen in: its own app ("app") or grok.com in a browser (the browser's bundle id).
+    static let browserPriorityKey = "browserPriority"
+    /// Window captures go into the LLM's message box without being sent, so several can be gathered.
     static let multiCaptureKey = "multiCapture"
     /// The first-run setup window has been dismissed.
     static let setupDoneKey = "setupDone"
@@ -84,7 +88,7 @@ enum SpeedyShared {
     static let keyCaptureNotification = groupID + ".key.capture"
     static let keyPasteNotification = groupID + ".key.paste"
     static let keyPasteSendNotification = groupID + ".key.pastesend"
-    /// Keypad setting keys: auto-send on/off, Auto MCP on/off, and the incident (ticket) number popup.
+    /// Keypad setting keys: auto-send on/off, Auto LLM on/off, and the incident (ticket) number popup.
     static let keyAutoSendNotification = groupID + ".key.autosend"
     static let keyAutoMCPNotification = groupID + ".key.automcp"
     static let keyTicketNotification = groupID + ".key.ticket"

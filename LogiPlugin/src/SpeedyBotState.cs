@@ -31,7 +31,7 @@ namespace Loupedeck.SpeedyBotPlugin
         /// <summary>Auto-send (screenshots taken in a session go into the chat app and are sent) is switched on.</summary>
         public Boolean AutoSend { get; private set; }
 
-        /// <summary>Auto MCP: screenshots go to whichever chat app the pointer was last over.</summary>
+        /// <summary>Auto LLM: screenshots go to whichever chat app the pointer was last over.</summary>
         public Boolean AutoMcp { get; private set; }
 
         /// <summary>The incident number screenshots are filed under ("#INC - 12,345"), or "" when none is set.</summary>

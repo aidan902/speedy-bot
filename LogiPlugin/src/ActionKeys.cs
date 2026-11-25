@@ -134,13 +134,13 @@ namespace Loupedeck.SpeedyBotPlugin
 
     public class AutoMcpCommand : PluginDynamicCommand
     {
-        public AutoMcpCommand() : base("Auto MCP on/off", "Switches Auto MCP on or off: screenshots go to whichever of the ticked chat apps (ChatGPT, Claude, Grok) the pointer was last over. Green while it is on.", "Speedy Bot") { }
+        public AutoMcpCommand() : base("Auto LLM on/off", "Switches Auto LLM on or off: screenshots go to whichever of the ticked chat apps (ChatGPT, Claude, Grok) the pointer was last over. Green while it is on.", "Speedy Bot") { }
         protected override Boolean OnLoad() { SpeedyBotState.Shared.Changed += this.Repaint; SpeedyBotState.Shared.Start(); return true; }
         protected override Boolean OnUnload() { SpeedyBotState.Shared.Changed -= this.Repaint; return true; }
         private void Repaint() => this.ActionImageChanged();
         protected override void RunCommand(String actionParameter) => AppSignal.Post("automcp");
-        protected override String GetCommandDisplayName(String actionParameter, PluginImageSize imageSize) => "Auto MCP";
-        protected override BitmapImage GetCommandImage(String actionParameter, PluginImageSize imageSize) => AppSignal.Setting(imageSize, "AUTO MCP", SpeedyBotState.Shared.AutoMcp);
+        protected override String GetCommandDisplayName(String actionParameter, PluginImageSize imageSize) => "Auto LLM";
+        protected override BitmapImage GetCommandImage(String actionParameter, PluginImageSize imageSize) => AppSignal.Setting(imageSize, "AUTO LLM", SpeedyBotState.Shared.AutoMcp);
     }
 
     public class TicketCommand : PluginDynamicCommand

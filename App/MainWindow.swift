@@ -75,8 +75,8 @@ struct MainView: View {
                                              resetLabel: state.captureShortcut == nil ? nil : WindowCaptureController.defaultShortcut.label) { state.setCaptureShortcut($0) }
                         }
                         HStack(spacing: 8) {
-                            RoundToggle(symbol: "checkmark", label: "Multi-capture: load into the MCP, don't send", isOn: $state.multiCapture, size: 22, emptyWhenOff: true)
-                            Text("Multi-capture: load into the MCP, don't send").lineLimit(1).minimumScaleFactor(0.85)
+                            RoundToggle(symbol: "checkmark", label: "Multi-capture: load into the LLM, don't send", isOn: $state.multiCapture, size: 22, emptyWhenOff: true)
+                            Text("Multi-capture: load into the LLM, don't send").lineLimit(1).minimumScaleFactor(0.85)
                             Spacer(minLength: 0)
                         }
                         if state.multiCapture {
@@ -176,6 +176,13 @@ struct MainView: View {
         return "Take a screenshot, then \(how). It goes into the message box."
     }
 
+    /// Grok's own app and the browsers that are installed, in priority order.
+    private var installedPlaces: [String] {
+        state.placePriority.filter { place in
+            place == PasteTarget.appPlace || NSWorkspace.shared.urlForApplication(withBundleIdentifier: place) != nil
+        }
+    }
+
     private var pasteOptions: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
@@ -195,9 +202,23 @@ struct MainView: View {
                 Text("Grok counts as the Grok app, or grok.com open in Safari, Chrome, Arc, Brave or Edge (there a screenshot is pasted and Return pressed).")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
+            if state.pasteTargets.count > 1 {
+                PriorityRow(title: "Chat priority", items: state.chatPriority.filter(state.pasteTargets.contains), name: \.title) {
+                    state.raisePriority($0, in: &state.chatPriority)
+                }
+            }
+            if state.pasteTargets.contains(.grok) {
+                PriorityRow(title: "Grok in", items: installedPlaces, name: PasteTarget.placeName) {
+                    state.raisePriority($0, in: &state.placePriority)
+                }
+            }
+            if state.pasteTargets.count > 1 || state.pasteTargets.contains(.grok) {
+                Text("When more than one is open and no chat was just used (or Auto LLM is off), screenshots go to the first. ← moves one up.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             HStack(spacing: 8) {
-                RoundToggle(symbol: "checkmark", label: "Auto MCP", isOn: $state.autoMCP, size: 22, emptyWhenOff: true)
-                Text("Auto MCP: paste into the chat app the pointer was last in").lineLimit(1).minimumScaleFactor(0.85)
+                RoundToggle(symbol: "checkmark", label: "Auto LLM", isOn: $state.autoMCP, size: 22, emptyWhenOff: true)
+                Text("Auto LLM: paste into the chat app the pointer was last in").lineLimit(1).minimumScaleFactor(0.85)
                 Spacer(minLength: 0)
             }
             if state.autoMCP {
@@ -233,7 +254,7 @@ struct MainView: View {
                 Spacer(minLength: 0)
             }
             if state.autoSendFromSession {
-                Text("With a ScreenConnect session in front and \(state.pasteTargetNames) open on the same desktop, a screenshot is pasted and sent straight away. No pointer move, no Return. Anywhere else, it is sent as soon as it is pasted; with Auto MCP on too, it goes straight into the chat you were last in, without moving there. Nothing is sent while you have something typed in the message box (Claude's box cannot be checked).")
+                Text("With a ScreenConnect session in front and \(state.pasteTargetNames) open on the same desktop, a screenshot is pasted and sent straight away. No pointer move, no Return. Anywhere else, it is sent as soon as it is pasted; with Auto LLM on too, it goes straight into the chat you were last in, without moving there. Nothing is sent while you have something typed in the message box (Claude's box cannot be checked).")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if state.pasteTrigger == .shortcut {
@@ -538,5 +559,29 @@ final class MainWindowController {
     func show() {
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+    }
+}
+
+/// A priority order as a row: "1 Grok  ← 2 ChatGPT  ← 3 Claude"; the arrow moves that entry up one place.
+private struct PriorityRow<Item: Hashable>: View {
+    let title: String
+    let items: [Item]
+    let name: (Item) -> String
+    let raise: (Item) -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(title).fixedSize()
+            ForEach(Array(items.enumerated()), id: \.element) { index, item in
+                if index > 0 {
+                    Button { raise(item) } label: { Image(systemName: "arrow.left") }
+                        .buttonStyle(.borderless).help("Move \(name(item)) up")
+                }
+                Text("\(index + 1) \(name(item))").lineLimit(1).fixedSize()
+                    .padding(.horizontal, 7).padding(.vertical, 2)
+                    .background(index == 0 ? Color.controlOn.opacity(0.18) : Color.primary.opacity(0.06), in: Capsule())
+            }
+            Spacer(minLength: 0)
+        }
     }
 }
