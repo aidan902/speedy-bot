@@ -44,12 +44,25 @@ enum OnePassword {
         }
     }
 
-    /// One field of one item ("password" or "username"), revealed. Only the final line break `op` adds is removed.
-    static func field(_ label: String, of id: String) async throws -> String {
-        let out = try await run(["item", "get", id, "--fields", "label=\(label)", "--reveal"])
-        var text = String(decoding: out, as: UTF8.self)
-        if text.hasSuffix("\n") { text.removeLast() }
-        return text
+    struct Secrets: Sendable { let username: String; let password: String }
+
+    /// The username and password of one item, exactly as stored (read from the item's JSON, not from `--fields`,
+    /// whose CSV output quotes a value with a comma or a quote in it). The item's own password field (purpose
+    /// PASSWORD, or the field with id "password") is used; an item with no such field but exactly one field labelled
+    /// "password" uses that one, and one with several is refused rather than guessed.
+    static func secrets(of id: String) async throws -> Secrets {
+        let out = try await run(["item", "get", id, "--format", "json", "--reveal"])
+        guard let item = try? JSONSerialization.jsonObject(with: out) as? [String: Any] else { throw Failure.failed("unexpected answer") }
+        let fields = item["fields"] as? [[String: Any]] ?? []
+        func pick(purpose: String, id: String) throws -> String {
+            if let f = fields.first(where: { ($0["purpose"] as? String) == purpose }) ?? fields.first(where: { ($0["id"] as? String) == id }) {
+                return f["value"] as? String ?? ""
+            }
+            let labelled = fields.filter { ($0["label"] as? String)?.lowercased() == id }
+            if labelled.count > 1 { throw Failure.failed("that item has more than one \(id) field") }
+            return labelled.first?["value"] as? String ?? ""
+        }
+        return Secrets(username: try pick(purpose: "USERNAME", id: "username"), password: try pick(purpose: "PASSWORD", id: "password"))
     }
 
     /// Runs `op` off the main thread. Its output is returned, never logged; its error text is only matched.
@@ -72,12 +85,14 @@ enum OnePassword {
                     return
                 }
                 // Read both pipes while it runs (a big vault list fills a pipe's buffer).
-                var outData = Data(), errData = Data()
+                final class Box: @unchecked Sendable { var data = Data() }
+                let outBox = Box()
                 let group = DispatchGroup()
                 group.enter()
-                DispatchQueue.global().async { outData = out.fileHandleForReading.readDataToEndOfFile(); group.leave() }
-                errData = err.fileHandleForReading.readDataToEndOfFile()
-                group.wait()
+                DispatchQueue.global().async { outBox.data = out.fileHandleForReading.readDataToEndOfFile(); group.leave() }
+                let errData = err.fileHandleForReading.readDataToEndOfFile()
+                group.wait()   // the reader is done before its data is used
+                let outData = outBox.data
                 process.waitUntilExit()
                 if process.terminationStatus == 0 {
                     continuation.resume(returning: outData)
@@ -97,17 +112,25 @@ enum OnePassword {
         }
     }
 
-    /// Items whose title or website shares a word (3+ letters) with the session's name come first, then A-Z.
-    static func ranked(_ items: [Item], session: String) -> [Item] {
-        let words = Set(session.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init).filter { $0.count >= 3 })
+    /// Words in a ScreenConnect window title that say nothing about the machine (the tech's own ScreenConnect login
+    /// must never come first because of them).
+    static let titleNoise: Set<String> = ["screenconnect", "connectwise", "control", "connected", "connecting", "disconnected",
+                                          "session", "sessions", "remote", "access", "support", "meeting", "guest", "host", "client", "the"]
+
+    /// Items whose title or website shares a word (3+ letters, not ScreenConnect's own) with the session's name come
+    /// first, then A-Z. `matched`: whether the first one shares such a word (only then is it chosen in advance).
+    static func ranked(_ items: [Item], session: String) -> (items: [Item], matched: Bool) {
+        let words = Set(session.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+            .filter { $0.count >= 3 && !titleNoise.contains($0) })
         func score(_ item: Item) -> Int {
             let hay = (item.title + " " + item.urls.joined(separator: " ")).lowercased()
             return words.filter { hay.contains($0) }.count
         }
-        return items.sorted { a, b in
+        let sorted = items.sorted { a, b in
             let sa = score(a), sb = score(b)
             return sa != sb ? sa > sb : a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
         }
+        return (sorted, sorted.first.map { score($0) > 0 } ?? false)
     }
 }
 
@@ -170,9 +193,19 @@ final class PasswordPicker: NSObject, NSWindowDelegate {
                 model.selection = list[next].id
                 return nil
             case 36, 76:                         // Return, Enter
-                let list = model.shown
-                if let item = list.first(where: { $0.id == model.selection }) ?? list.first {
-                    self.pick(item, withUser: event.modifierFlags.contains(.option))
+                let withUser = event.modifierFlags.contains(.option)
+                // A click on a row selects it a moment later: let that land before reading the selection.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    MainActor.assumeIsolated {
+                        guard self.model === model else { return }
+                        let list = model.shown
+                        let searched = !model.query.trimmingCharacters(in: .whitespaces).isEmpty
+                        if let item = list.first(where: { $0.id == model.selection }) ?? (searched ? list.first : nil) {
+                            self.pick(item, withUser: withUser)
+                        } else {
+                            NSSound.beep()   // nothing chosen yet
+                        }
+                    }
                 }
                 return nil
             default: return event
@@ -180,11 +213,12 @@ final class PasswordPicker: NSObject, NSWindowDelegate {
         }
         Task { @MainActor in
             do {
-                let items = OnePassword.ranked(try await OnePassword.list(), session: session)
+                let ranked = OnePassword.ranked(try await OnePassword.list(), session: session)
                 guard self.model === model else { return }
-                model.items = items
-                model.selection = items.first?.id
-                model.status = items.isEmpty ? "No logins in 1Password" : nil
+                model.items = ranked.items
+                // Chosen in advance only when it matches this session; otherwise the tech picks or searches.
+                model.selection = ranked.matched ? ranked.items.first?.id : nil
+                model.status = ranked.items.isEmpty ? "No logins in 1Password" : nil
             } catch let failure as OnePassword.Failure {
                 guard self.model === model else { return }
                 model.status = failure.message
@@ -229,7 +263,10 @@ private struct PasswordPickerView: View {
             TextField("Search 1Password", text: $model.query)
                 .textFieldStyle(.roundedBorder).font(.title3)
                 .focused($searchFocused)
-                .onChange(of: model.query) { _ in model.selection = model.shown.first?.id }
+                .onChange(of: model.query) { _ in
+                    // Typing a search chooses its first result; clearing it chooses nothing.
+                    model.selection = model.query.trimmingCharacters(in: .whitespaces).isEmpty ? nil : model.shown.first?.id
+                }
             if let status = model.status {
                 Text(status).foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {

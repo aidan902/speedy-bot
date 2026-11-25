@@ -187,17 +187,21 @@ final class RemoteTypingController {
     /// The keys for `text` on this Mac's layout, or nil (with a note) when the layout cannot be read or cannot type
     /// every character: all or nothing, since a password with one character missing is a wrong password, and a
     /// command with a character missing is a different command.
-    private func typingPlan(_ text: String) -> (TypingPlan, TypingOptions)? {
+    /// `secret`: a password from 1Password. Typed exactly (no curly quote or dash turned into a plain one), and the
+    /// characters that cannot be typed are never shown.
+    private func typingPlan(_ text: String, secret: Bool = false) -> (TypingPlan, TypingOptions)? {
         guard let keyMap = LayoutKeyMap.current() else {
             Toast.show("Could not read this Mac's keyboard layout")
             return nil
         }
-        let options = state.fastTyping ? TypingOptions.fast : TypingOptions()
+        var options = state.fastTyping ? TypingOptions.fast : TypingOptions()
+        if secret { options.asciiFold = false }
         let plan = TextTyper.plan(text, keyMap: keyMap, options: options)
         guard plan.skipped.isEmpty else {
             var seen = Set<Character>()
             let sample = String(plan.skipped.filter { seen.insert($0).inserted }.prefix(8))
-            Toast.show("This keyboard cannot type: \(sample)  Nothing was typed", seconds: 4)
+            Toast.show(secret ? "This password has characters this keyboard layout cannot type. Nothing was typed"
+                              : "This keyboard cannot type: \(sample)  Nothing was typed", seconds: 4)
             SpeedyShared.log.notice("typing refused: characters not on this keyboard layout")
             return nil
         }
@@ -207,12 +211,16 @@ final class RemoteTypingController {
     // MARK: 1Password
 
     private lazy var picker = PasswordPicker()
+    /// A pick is being fetched and the session brought back: Esc (or switching Speedy Bot off) still stops it.
+    private var pickInFlight = false
+    /// What a "let go of the keys" note tells the tech to press again.
+    private var retryLabel = ""
 
     /// The keypad's Password key (or the menu): a search over the local 1Password vault, opened over the ScreenConnect
     /// session in front; the pick is typed into that session window key by key, never through the clipboard.
     func passwordFromKey() {
         guard enabled else { Toast.show("Typing into ScreenConnect is switched off in Speedy Bot", seconds: 2.5); return }
-        guard !typing else { return }
+        guard !typing, !pickInFlight else { return }
         guard let front = NSWorkspace.shared.frontmostApplication, FrontmostAppGate.isScreenConnect(front) else {
             Toast.show("Click into the ScreenConnect session first, then press Password", seconds: 2.5)
             return
@@ -232,21 +240,37 @@ final class RemoteTypingController {
 
     private func typePick(_ item: OnePassword.Item, withUser: Bool, session: NSRunningApplication, window: WindowUnderPointer?,
                           focus: FocusProbe) {
+        // From the pick on, Esc stops it (and is not passed on to the remote), as does switching Speedy Bot off.
+        pickInFlight = true
+        cancelled.set(false)
+        escKey?.register()
+        let me = ProcessInfo.processInfo.processIdentifier
         Task { @MainActor in
-            let password: String, username: String
+            @MainActor func stop(_ note: String?) {
+                self.pickInFlight = false
+                self.escKey?.unregister()
+                if let note { Toast.show(note, seconds: 3) }
+            }
+            @MainActor func stoppedByTech() -> Bool { self.cancelled.get() || !self.enabled }
+            let secrets: OnePassword.Secrets
             do {
-                password = try await OnePassword.field("password", of: item.id)
-                username = withUser ? try await OnePassword.field("username", of: item.id) : ""
+                secrets = try await OnePassword.secrets(of: item.id)
             } catch let failure as OnePassword.Failure {
-                Toast.show(failure.message, seconds: 4)
+                stop(failure.message)
                 return
             } catch {
-                Toast.show("1Password could not be read", seconds: 3)
+                stop("1Password could not be read")
                 return
             }
-            guard !password.isEmpty else { Toast.show("That item has no password", seconds: 2.5); return }
-            guard !withUser || !username.isEmpty else { Toast.show("That item has no username. Press Return for the password only", seconds: 3); return }
-            guard !session.isTerminated else { Toast.show("The ScreenConnect session closed. Nothing was typed", seconds: 3); return }
+            let password = secrets.password, username = withUser ? secrets.username : ""
+            if stoppedByTech() { stop("Stopped. Nothing was typed"); return }
+            guard !password.isEmpty else { stop("That item has no password"); return }
+            guard !withUser || !username.isEmpty else { stop("That item has no username. Press Return for the password only"); return }
+            guard !session.isTerminated else { stop("The ScreenConnect session closed. Nothing was typed"); return }
+            // Only from Speedy Bot's own search (just closed) or the session itself: if the tech has moved to another
+            // app meanwhile, they are doing something else.
+            let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            guard front == me || front == session.processIdentifier else { stop("You moved to another app. Nothing was typed"); return }
             // Back to the very session window the key was pressed over.
             if let window { Paster.raise(pid: session.processIdentifier, window: window) }
             Paster.bringBack(session)
@@ -254,14 +278,17 @@ final class RemoteTypingController {
                 try? await Task.sleep(for: .milliseconds(50))
             }
             try? await Task.sleep(for: .milliseconds(200))   // the session takes the keyboard back
+            if stoppedByTech() { stop("Stopped. Nothing was typed"); return }
             guard NSWorkspace.shared.frontmostApplication?.processIdentifier == session.processIdentifier, focus.stillFocused() else {
-                Toast.show("The ScreenConnect session did not come back to the front. Nothing was typed", seconds: 3)
+                stop("The ScreenConnect session did not come back to the front. Nothing was typed")
                 return
             }
-            if TextTyper.capsLockOn { Toast.show("Caps Lock is on. Turn it off and press Password again", seconds: 3); return }
-            guard !typing, let (plan, options) = typingPlan(withUser ? username + "\t" + password : password), !plan.keys.isEmpty else { return }
+            if TextTyper.capsLockOn { stop("Caps Lock is on. Turn it off and press Password again"); return }
+            guard !self.typing, let (plan, options) = self.typingPlan(withUser ? username + "\t" + password : password, secret: true),
+                  !plan.keys.isEmpty else { stop(nil); return }
             SpeedyShared.log.notice("1Password: typing a pick into the session\(withUser ? " (username and password)" : "", privacy: .public)")
-            start(plan: plan, options: options, focus: focus, releaseKey: CGKeyCode(kVK_Return))
+            self.pickInFlight = false
+            self.start(plan: plan, options: options, focus: focus, releaseKey: CGKeyCode(kVK_Return), retry: "Password")
         }
     }
 
@@ -269,10 +296,13 @@ final class RemoteTypingController {
 
     /// `releaseKey`: the key that started this (the shortcut's, or Return in the 1Password search), which has to be
     /// up before anything is typed.
-    private func start(plan: TypingPlan, options: TypingOptions, focus: FocusProbe, releaseKey: CGKeyCode? = nil) {
+    /// `retry`: what the "let go of the keys" note says to press again (the shortcut when nil).
+    private func start(plan: TypingPlan, options: TypingOptions, focus: FocusProbe, releaseKey: CGKeyCode? = nil, retry: String? = nil) {
         typing = true
         targetPID = focus.pid
-        cancelled.set(false)
+        retryLabel = retry ?? state.typingShortcutLabel
+        // A 1Password pick has been stoppable since it was picked, and was checked just now; the shortcut starts fresh.
+        if releaseKey == nil { cancelled.set(false) }
         sessionInFront.set(true)
         escKey?.register()
         state.typing = true
@@ -307,7 +337,7 @@ final class RemoteTypingController {
         let outcome = !released ? "modifiers still held" : posted < total ? "stopped early" : "complete"
         SpeedyShared.log.notice("typing finished: \(outcome, privacy: .public)")
         if !released {
-            Toast.show("Let go of the keys, then press \(state.typingShortcutLabel) again", seconds: 3)
+            Toast.show("Let go of the keys, then press \(retryLabel) again", seconds: 3)
         } else if posted < total {
             Toast.show("Typing stopped", seconds: 2)
         }
