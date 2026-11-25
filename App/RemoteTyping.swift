@@ -57,7 +57,7 @@ struct FocusProbe: @unchecked Sendable {
 final class RemoteTypingController {
     private unowned let state: AppState
     private var gate: FrontmostAppGate?
-    /// ⇧⌘P (or the tech's own): the keypad's Password key from the keyboard, claimed only while a session is in front.
+    /// ⇧⌘Space (or the tech's own): the keypad's Password key from the keyboard, claimed only while a session is in front.
     private var passwordGate: FrontmostAppGate?
     private var passwordSpec: HotKeySpec?
     /// The shortcut was pressed; the search opens once its keys are up.
@@ -128,7 +128,7 @@ final class RemoteTypingController {
         registerPasswordHotKey()
     }
 
-    /// (Re)creates the Password shortcut: the tech's own, or ⇧⌘P on the key that means P on this layout. Not claimed
+    /// (Re)creates the Password shortcut: the tech's own, or ⇧⌘Space. Not claimed
     /// at all when another of Speedy Bot's jobs already has that combination (a shortcut recorded before this one
     /// existed).
     private func registerPasswordHotKey() {
@@ -154,7 +154,7 @@ final class RemoteTypingController {
     private func passwordFromShortcut() {
         guard enabled, !typing, !pickInFlight, !openingPicker, !waitingForPasswordKeys else { return }
         waitingForPasswordKeys = true
-        let key = CGKeyCode(passwordSpec?.keyCode ?? Int(kVK_ANSI_P))
+        let key = CGKeyCode(passwordSpec?.keyCode ?? Int(kVK_Space))
         let label = state.passwordShortcutLabel
         DispatchQueue.global(qos: .userInitiated).async {
             let wait = TextTyper.waitForPhysicalRelease(key: key, timeout: 3.0)

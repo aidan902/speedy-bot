@@ -276,7 +276,8 @@ if CommandLine.arguments.contains("--selftest") {
     expect("probe split lines", "\(split?.ip.description ?? "nil")/\(split?.prefix ?? -1) \(split?.gateway ?? "nogw") \(split?.host ?? "nohost") \(split?.publicIP ?? "nopub")", "172.16.37.46/23 172.16.36.1 FLC-JACKSON nopub")
     for f in failures { print("FAIL \(f)") }
     // Shortcuts pressed in a session must not leave a bare Windows-key or Alt tap on the remote.
-    expect("⇧⌘P safe on Windows", String(HotKeySpec.defaultPassword.leavesBareModifierTapOnRemote), "false")
+    expect("⇧⌘Space safe on Windows", String(HotKeySpec.defaultPassword.leavesBareModifierTapOnRemote), "false")
+    expect("⇧⌘Space label", HotKeySpec.defaultPassword.label, HotKeySpec.defaultPasswordLabel)
     expect("⌥Space refused", String(HotKeySpec(keyCode: kVK_Space, carbonModifiers: optionKey).leavesBareModifierTapOnRemote), "true")
     // The Password key: which site a page is on, and which logins fit it.
     func line(_ text: String, _ top: Double) -> SessionProbe.Line { SessionProbe.Line(text: text, top: top) }
