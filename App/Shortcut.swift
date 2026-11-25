@@ -9,8 +9,16 @@ struct HotKeySpec: Equatable {
 
     static let defaultLabel = "⇧⌘V"   // modifier order as macOS menus print it
 
-    /// The stored shortcuts: typing into a session, pasting a screenshot into ChatGPT, capturing the session window.
-    enum Slot: String { case typing, paste, capture }
+    /// ⇧⌘P: type a 1Password password into the session (the keypad's Password key, for techs without the keypad).
+    static let defaultPasswordLabel = "⇧⌘P"
+    /// ⇧⌘P on the key that means P while Command is held (it moves with the keyboard layout, as ⇧⌘V does).
+    static var defaultPassword: HotKeySpec {
+        HotKeySpec(keyCode: Int(LayoutKeyMap.keyCodeWithCommand(for: "p") ?? CGKeyCode(kVK_ANSI_P)), carbonModifiers: cmdKey | shiftKey)
+    }
+
+    /// The stored shortcuts: typing into a session, pasting a screenshot into ChatGPT, capturing the session window,
+    /// typing a 1Password password into the session.
+    enum Slot: String { case typing, paste, capture, password }
 
     static func load(_ slot: Slot) -> HotKeySpec? {
         let d = SpeedyShared.defaults

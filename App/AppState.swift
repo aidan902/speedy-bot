@@ -120,6 +120,8 @@ final class AppState: ObservableObject {
     @Published private(set) var pasteShortcut: HotKeySpec?
     /// The tech's own shortcut for typing into a session (nil = the standard ⌘⇧V).
     @Published private(set) var typingShortcut: HotKeySpec?
+    /// The tech's own shortcut for typing a 1Password password into a session (nil = the standard ⇧⌘P).
+    @Published private(set) var passwordShortcut: HotKeySpec?
     /// Why screenshots are not being seen, when they are not (shown in the window).
     @Published private(set) var screenshotNote: String?
     /// Canonical incident label ("#INC - 12,345"), or "" when none is set.
@@ -180,6 +182,7 @@ final class AppState: ObservableObject {
         let storedPlaces = (SpeedyShared.defaults.stringArray(forKey: SpeedyShared.browserPriorityKey) ?? []).filter(PasteTarget.defaultPlaces.contains)
         placePriority = storedPlaces + PasteTarget.defaultPlaces.filter { !storedPlaces.contains($0) }
         typingShortcut = HotKeySpec.load(.typing).flatMap { $0.leavesBareModifierTapOnRemote ? nil : $0 }
+        passwordShortcut = HotKeySpec.load(.password).flatMap { $0.leavesBareModifierTapOnRemote ? nil : $0 }
         let storedIncident = SpeedyShared.defaults.string(forKey: SpeedyShared.incidentKey) ?? ""
         incident = storedIncident
         let storedRecents = Array((SpeedyShared.defaults.stringArray(forKey: SpeedyShared.recentIncidentsKey) ?? []).prefix(3))
@@ -469,12 +472,13 @@ final class AppState: ObservableObject {
     var captureShortcutLabel: String { (captureShortcut ?? WindowCaptureController.defaultShortcut).label }
 
     /// Two jobs on one key combination cannot both work. Says which job already has it, if any.
-    private func owner(of spec: HotKeySpec, except slot: HotKeySpec.Slot) -> String? {
+    func owner(of spec: HotKeySpec, except slot: HotKeySpec.Slot) -> String? {
         let typing = typingShortcut ?? HotKeySpec(keyCode: Int(LayoutKeyMap.keyCodeWithCommand(for: "v") ?? CGKeyCode(kVK_ANSI_V)), carbonModifiers: cmdKey | shiftKey)
         let capture = captureShortcut ?? WindowCaptureController.defaultShortcut
         if slot != .typing, spec == typing { return "typing into ScreenConnect" }
         if slot != .capture, spec == capture { return "capturing the ScreenConnect window" }
         if slot != .paste, let pasteShortcut, spec == pasteShortcut { return "pasting a screenshot into \(pasteTargetNames)" }
+        if slot != .password, spec == (passwordShortcut ?? HotKeySpec.defaultPassword) { return "typing a 1Password password" }
         return nil
     }
 
@@ -507,6 +511,15 @@ final class AppState: ObservableObject {
         if refuse(spec, for: .typing) { return }
         typingShortcut = spec
         HotKeySpec.save(spec, .typing)
+        typer.shortcutChanged()
+    }
+
+    var passwordShortcutLabel: String { passwordShortcut?.label ?? HotKeySpec.defaultPasswordLabel }
+
+    func setPasswordShortcut(_ spec: HotKeySpec?) {
+        if refuse(spec, for: .password) { return }
+        passwordShortcut = spec
+        HotKeySpec.save(spec, .password)
         typer.shortcutChanged()
     }
 

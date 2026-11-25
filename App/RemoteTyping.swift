@@ -57,6 +57,11 @@ struct FocusProbe: @unchecked Sendable {
 final class RemoteTypingController {
     private unowned let state: AppState
     private var gate: FrontmostAppGate?
+    /// ⇧⌘P (or the tech's own): the keypad's Password key from the keyboard, claimed only while a session is in front.
+    private var passwordGate: FrontmostAppGate?
+    private var passwordSpec: HotKeySpec?
+    /// The shortcut was pressed; the search opens once its keys are up.
+    private var waitingForPasswordKeys = false
     private var hotKeyCode = CGKeyCode(kVK_ANSI_V)
     private var hotKeyModifiers = cmdKey | shiftKey
     private var escKey: GlobalHotKey?
@@ -80,8 +85,10 @@ final class RemoteTypingController {
         if on {
             if gate == nil { build() }
             gate?.enabled = true
+            passwordGate?.enabled = true
         } else {
             gate?.enabled = false
+            passwordGate?.enabled = false
             cancelled.set(true)
             pendingConfirm = nil
         }
@@ -101,8 +108,49 @@ final class RemoteTypingController {
         // The V key moves when the tech switches keyboard layout; move the shortcut with it.
         observers.append(DistributedNotificationCenter.default().addObserver(
             forName: NSNotification.Name("com.apple.Carbon.TISNotifySelectedKeyboardInputSourceChanged"), object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.registerHotKey() }
+            MainActor.assumeIsolated { self?.registerHotKey(); self?.registerPasswordHotKey() }
         })
+        registerPasswordHotKey()
+    }
+
+    /// (Re)creates the Password shortcut: the tech's own, or ⇧⌘P on the key that means P on this layout. Not claimed
+    /// at all when another of Speedy Bot's jobs already has that combination (a shortcut recorded before this one
+    /// existed).
+    private func registerPasswordHotKey() {
+        let spec = state.passwordShortcut ?? HotKeySpec.defaultPassword
+        if passwordGate != nil, spec == passwordSpec { return }
+        passwordGate?.stop()
+        passwordGate = nil
+        passwordSpec = spec
+        if let job = state.owner(of: spec, except: .password) {
+            SpeedyShared.log.notice("password shortcut \(spec.label, privacy: .public) not claimed: it is the shortcut for \(job, privacy: .public)")
+            return
+        }
+        let hk = GlobalHotKey(keyCode: spec.keyCode, carbonModifiers: spec.carbonModifiers) { [weak self] in self?.passwordFromShortcut() }
+        let g = FrontmostAppGate(hotKey: hk, matches: FrontmostAppGate.isScreenConnect)
+        g.enabled = enabled
+        passwordGate = g
+    }
+
+    /// The Password shortcut. ScreenConnect has already passed its modifiers to the remote (⌘ as the Windows key, ⇧ as
+    /// Shift). The search would take the keyboard, so their key-ups would never reach the remote and Windows would
+    /// keep them held: the next keys typed there would be Windows-key shortcuts. So the search opens only once
+    /// every key of the shortcut is up and the session has passed that on.
+    private func passwordFromShortcut() {
+        guard enabled, !typing, !pickInFlight, !openingPicker, !waitingForPasswordKeys else { return }
+        waitingForPasswordKeys = true
+        let key = CGKeyCode(passwordSpec?.keyCode ?? Int(kVK_ANSI_P))
+        let label = state.passwordShortcutLabel
+        DispatchQueue.global(qos: .userInitiated).async {
+            let wait = TextTyper.waitForPhysicalRelease(key: key, timeout: 3.0)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self.waitingForPasswordKeys = false
+                    guard wait.released else { Toast.show("Let go of the keys, then press \(label) again", seconds: 3); return }
+                    self.passwordFromKey()
+                }
+            }
+        }
     }
 
     /// (Re)creates the shortcut: the tech's own if they recorded one, otherwise Cmd+Shift+V on the key that
@@ -123,7 +171,7 @@ final class RemoteTypingController {
 
     /// The tech recorded a different shortcut (or went back to the standard one).
     func shortcutChanged() {
-        if gate != nil { registerHotKey() }
+        if gate != nil { registerHotKey(); registerPasswordHotKey() }
     }
 
     // MARK: the shortcut

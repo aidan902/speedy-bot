@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import Vision
 import SwiftUI
 
@@ -274,6 +275,9 @@ if CommandLine.arguments.contains("--selftest") {
     let split = SessionProbe.parse("SPEEDYBOT\n172.16.37.46/23 gw=172.16.36.1\nhost=FLC-JACKSON pub=")
     expect("probe split lines", "\(split?.ip.description ?? "nil")/\(split?.prefix ?? -1) \(split?.gateway ?? "nogw") \(split?.host ?? "nohost") \(split?.publicIP ?? "nopub")", "172.16.37.46/23 172.16.36.1 FLC-JACKSON nopub")
     for f in failures { print("FAIL \(f)") }
+    // Shortcuts pressed in a session must not leave a bare Windows-key or Alt tap on the remote.
+    expect("⇧⌘P safe on Windows", String(HotKeySpec.defaultPassword.leavesBareModifierTapOnRemote), "false")
+    expect("⌥Space refused", String(HotKeySpec(keyCode: kVK_Space, carbonModifiers: optionKey).leavesBareModifierTapOnRemote), "true")
     // The Password key: which site a page is on, and which logins fit it.
     func line(_ text: String, _ top: Double) -> SessionProbe.Line { SessionProbe.Line(text: text, top: top) }
     expect("address bar read", OnePassword.pageHosts(in: [line("Sign In", 0.3), line("someone@example.net", 0.4), line("qsys.com/nc/login/my-qsc/", 0.13)]).joined(separator: " "), "qsys.com")

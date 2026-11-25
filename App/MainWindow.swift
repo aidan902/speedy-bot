@@ -295,6 +295,15 @@ struct MainView: View {
                 ShortcutRecorder(label: state.typingShortcutLabel,
                                  resetLabel: state.typingShortcut == nil ? nil : HotKeySpec.defaultLabel) { state.setTypingShortcut($0) }
             }
+            HStack {
+                Text("1Password password")
+                Spacer()
+                ShortcutRecorder(label: state.passwordShortcutLabel,
+                                 resetLabel: state.passwordShortcut == nil ? nil : HotKeySpec.defaultPasswordLabel) { state.setPasswordShortcut($0) }
+            }
+            Text("In a session: the keypad's Password key from the keyboard. Search the 1Password on this Mac; press it again (or Return) to type the chosen password.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading).padding(.leading, inset).padding(.trailing, 12).padding(.bottom, 12)
     }
