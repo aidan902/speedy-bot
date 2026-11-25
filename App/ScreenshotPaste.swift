@@ -382,7 +382,9 @@ final class ScreenshotPasteController {
                 captureStarted = (where_.map(FrontmostAppGate.isScreenConnect) ?? false, Date())
                 captureOrigin = (Date(), where_, where_.flatMap { WindowHitTest.frontWindow(ofPID: $0.processIdentifier)?.windowID }, false)
             }
-            if pasteEnabled, autoMCP, autoSendFromSession, captureOrigin?.chatSeen == false, targetUnderPointer() != nil {
+            // Not while a paste of ours has the chat in front (or just had): that is not where the tech took it.
+            if pasteEnabled, autoMCP, autoSendFromSession, captureOrigin?.chatSeen == false, !pasting,
+               recentAutoPaste.map({ Date() >= $0.until }) ?? true, chatSeenDuringCapture() {
                 captureOrigin?.chatSeen = true
             }
             lastCaptureToolAt = Date()
@@ -679,7 +681,7 @@ final class ScreenshotPasteController {
         // An auto-paste of ours has the chat app in front for a moment: the tech is still in their session.
         var viaOurPaste = false
         if session == nil, let recent = recentAutoPaste, Date() < recent.until, !recent.session.isTerminated,
-           front?.processIdentifier == recent.chatPID {
+           front?.processIdentifier == recent.chatPID, recent.session.processIdentifier != recent.chatPID {
             session = recent.session
             viaOurPaste = true
         }
@@ -720,6 +722,16 @@ final class ScreenshotPasteController {
             return
         }
         runSessionPaste(returnTo: session, multi: multi)
+    }
+
+    /// While a screenshot is being taken: the pointer on a chat window, or a chat in front (a chat app, or a browser
+    /// window showing a chat website). Then that screenshot may be of the chat, and is not sent there by itself.
+    private func chatSeenDuringCapture() -> Bool {
+        if targetUnderPointer() != nil { return true }
+        guard let front = NSWorkspace.shared.frontmostApplication else { return false }
+        if !PasteTarget.isBrowser(front) { return PasteTarget.matching(front, in: targets) != nil }
+        guard let w = WindowHitTest.frontWindow(ofPID: front.processIdentifier) else { return false }
+        return PasteTarget.matching(front, window: w, in: targets) != nil
     }
 
     /// The chat window the pointer was last in; before it has been in one since Speedy Bot started, or when that window
@@ -773,7 +785,7 @@ final class ScreenshotPasteController {
     /// another paste only finds the chat window again.
     private func runLastChatPaste(_ target: (app: NSRunningApplication, window: WindowUnderPointer)?, back: NSRunningApplication?,
                                   backWindow: WindowUnderPointer?) {
-        guard let armed, let target = target ?? lastChatWindow() else { return }
+        guard autoMCP, autoSendFromSession, pasteEnabled, let armed, let target = target ?? lastChatWindow() else { return }
         let name = PasteTarget.matching(target.app, window: target.window, in: targets)?.title ?? "the chat"
         SpeedyShared.log.notice("Auto MCP: screenshot taken outside a session; pasting into \(name, privacy: .public) and sending")
         paste(into: target.app, window: target.window, armed: armed, pointerMustStay: false, thenSend: true, returnTo: back,
