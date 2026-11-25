@@ -233,7 +233,7 @@ struct MainView: View {
                 Spacer(minLength: 0)
             }
             if state.autoSendFromSession {
-                Text("With a ScreenConnect session in front and \(state.pasteTargetNames) open on the same desktop, a screenshot is pasted and sent straight away. No pointer move, no Return. Anywhere else, it is sent as soon as it is pasted. Nothing is sent while you have something typed in the message box (Claude's box cannot be checked).")
+                Text("With a ScreenConnect session in front and \(state.pasteTargetNames) open on the same desktop, a screenshot is pasted and sent straight away. No pointer move, no Return. Anywhere else, it is sent as soon as it is pasted; with Auto MCP on too, it goes straight into the chat you were last in, without moving there. Nothing is sent while you have something typed in the message box (Claude's box cannot be checked).")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if state.pasteTrigger == .shortcut {

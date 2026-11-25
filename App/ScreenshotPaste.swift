@@ -154,7 +154,7 @@ enum PasteTrigger: String, CaseIterable, Identifiable {
 final class ScreenshotPasteController {
     private struct Armed { let id: Int; let ref: ScreenshotRef; let at: Date }
     /// A paste the tech asks for in the chat app itself: moving onto it, a double- or triple-click (when), the shortcut.
-    private enum ChatAsk { case hover, click(at: Date), shortcut }
+    private enum ChatAsk { case hover, click(at: Date), shortcut, lastChat }
 
     private unowned let state: AppState
     private lazy var clipboardWatcher = PasteboardWatcher { [weak self] count, isScreenshot in
@@ -231,7 +231,7 @@ final class ScreenshotPasteController {
     private var nextSendToken = 1
     /// A session screenshot that arrived while another paste was under way: pasted once that paste is done, if it
     /// is still the screenshot waiting.
-    private var deferredAutoSend: (armedID: Int, returnTo: NSRunningApplication?, multi: Bool, at: Date)?
+    private var deferredAutoSend: (armedID: Int, returnTo: NSRunningApplication?, multi: Bool, at: Date, anywhere: Bool)?
     /// A keypad paste waiting for the session-window capture it started (or one already under way when the key was
     /// pressed), for up to 8 s. Only that capture goes into the chat app this way (sent or not), and only while the
     /// app that was in front at the press still is; the capture failing, Off or another key drops it.
@@ -683,15 +683,55 @@ final class ScreenshotPasteController {
                 // Taken in the session, but the tech has left it since: it waits for a move to the chat app.
                 SpeedyShared.log.notice("auto-send: the screenshot came after the tech left the session; left ready to paste")
                 Toast.show("Screenshot ready. Move to \(PasteTarget.names(targets)) to paste it", seconds: 2.5)
+                return
+            }
+            // Auto MCP with auto-send: a screenshot taken anywhere else goes straight to the chat the pointer was last
+            // in, is sent, and the app the tech was in comes back.
+            if lastChatTarget(front: front) != nil {
+                if pasting {
+                    deferredAutoSend = (armed.id, front, false, Date(), true)
+                } else {
+                    runLastChatPaste(returnTo: front)
+                }
             }
             return
         }
         if pasting {
             // Another paste is under way; this one goes once that is done (if it is still the one waiting).
-            deferredAutoSend = (armed.id, session, multi, Date())
+            deferredAutoSend = (armed.id, session, multi, Date(), false)
             return
         }
         runSessionPaste(returnTo: session, multi: multi)
+    }
+
+    /// Auto MCP and auto-send both on, and a screenshot taken outside a session: the chat window the pointer was last
+    /// in, if it is still on screen (and a browser's still shows the chat app's website). Never for a screenshot of the
+    /// chat itself: not with the pointer on a chat window, nor with that chat app in front now or when the screenshot
+    /// was taken, nor with any chat app in front when it was taken.
+    private func lastChatTarget(front: NSRunningApplication?) -> (app: NSRunningApplication, window: WindowUnderPointer)? {
+        guard autoMCP, autoSendFromSession, pasteEnabled, let last = lastChat,
+              let app = NSRunningApplication(processIdentifier: last.pid), !app.isTerminated,
+              let window = WindowHitTest.window(id: last.windowID, ofPID: last.pid),
+              PasteTarget.matching(app, window: window, in: targets) != nil else { return nil }
+        if targetUnderPointer() != nil { return nil }
+        let takenIn = frontBeforeTool ?? front
+        for candidate in [front, takenIn].compactMap({ $0 }) {
+            if candidate.processIdentifier == app.processIdentifier { return nil }
+            if !PasteTarget.isBrowser(candidate), PasteTarget.matching(candidate, in: targets) != nil { return nil }
+            if PasteTarget.isBrowser(candidate), let w = WindowHitTest.frontWindow(ofPID: candidate.processIdentifier),
+               PasteTarget.matching(candidate, window: w, in: targets) != nil { return nil }
+        }
+        return (app, window)
+    }
+
+    private func runLastChatPaste(returnTo front: NSRunningApplication?) {
+        guard let armed, let target = lastChatTarget(front: front) else { return }
+        let name = PasteTarget.matching(target.app, window: target.window, in: targets)?.title ?? "the chat"
+        SpeedyShared.log.notice("Auto MCP: screenshot taken outside a session; pasting into \(name, privacy: .public) and sending")
+        // Not back to Speedy Bot's own window or to nothing: then the chat app simply stays in front.
+        let back = front.flatMap { $0.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : $0 }
+        paste(into: target.app, window: target.window, armed: armed, pointerMustStay: false, thenSend: true, returnTo: back,
+              asked: .lastChat)
     }
 
     private func runSessionPaste(returnTo session: NSRunningApplication?, multi: Bool) {
@@ -1132,7 +1172,11 @@ final class ScreenshotPasteController {
             releaseIfIdle()
             return
         }
-        runSessionPaste(returnTo: deferred.returnTo, multi: deferred.multi)
+        if deferred.anywhere {
+            runLastChatPaste(returnTo: deferred.returnTo)
+        } else {
+            runSessionPaste(returnTo: deferred.returnTo, multi: deferred.multi)
+        }
     }
 
     /// Why auto-send may not send into a message box that reads like this before its paste, or nil when it may:
