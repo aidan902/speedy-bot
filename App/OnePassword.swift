@@ -30,7 +30,7 @@ enum OnePassword {
         var message: String {
             switch self {
             case .notInstalled: return "The 1Password command-line tool is not installed (brew install --cask 1password-cli)"
-            case .integrationOff: return "In 1Password, turn on Settings > Developer > Integrate with 1Password CLI"
+            case .integrationOff: return "Speedy Bot could not reach the 1Password app. Open 1Password and check Settings > Developer > Integrate with 1Password CLI"
             case .cancelled: return "1Password was not unlocked"
             case .failed(let why): return "1Password: \(why)"
             }
@@ -75,50 +75,117 @@ enum OnePassword {
         return Secrets(username: try pick(purpose: "USERNAME", id: "username"), password: try pick(purpose: "PASSWORD", id: "password"))
     }
 
-    /// Runs `op` off the main thread. Its output is returned, never logged; its error text is only matched.
+    /// Runs `op` off the main thread. Its output is returned, never logged; its error text is matched, and its first
+    /// line logged (op's own error words, e.g. "connecting to desktop app"; secrets only ever come on its output).
     private static func run(_ arguments: [String]) async throws -> Data {
         guard let path = cliPath else { throw Failure.notInstalled }
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: path)
-                process.arguments = arguments
-                var env = ProcessInfo.processInfo.environment
-                env["OP_FORMAT"] = nil
-                process.environment = env
-                let out = Pipe(), err = Pipe()
-                process.standardOutput = out
-                process.standardError = err
-                process.standardInput = FileHandle.nullDevice
-                do { try process.run() } catch {
+                guard let result = execute(path, arguments, disclaim: true) else {
                     continuation.resume(throwing: Failure.failed("could not start the command-line tool"))
                     return
                 }
-                // Read both pipes while it runs (a big vault list fills a pipe's buffer).
-                final class Box: @unchecked Sendable { var data = Data() }
-                let outBox = Box()
-                let group = DispatchGroup()
-                group.enter()
-                DispatchQueue.global().async { outBox.data = out.fileHandleForReading.readDataToEndOfFile(); group.leave() }
-                let errData = err.fileHandleForReading.readDataToEndOfFile()
-                group.wait()   // the reader is done before its data is used
-                let outData = outBox.data
-                process.waitUntilExit()
-                if process.terminationStatus == 0 {
-                    continuation.resume(returning: outData)
+                if result.status == 0 {
+                    continuation.resume(returning: result.out)
                     return
                 }
-                let message = String(decoding: errData, as: UTF8.self).lowercased()
-                if message.contains("integration") || message.contains("no accounts configured") || message.contains("connecting to desktop app")
-                    || message.contains("app is not running") {
-                    continuation.resume(throwing: Failure.integrationOff(message))
-                } else if message.contains("cancel") || message.contains("dismissed") || message.contains("authorization") {
-                    continuation.resume(throwing: Failure.cancelled)
-                } else {
-                    SpeedyShared.log.notice("1Password command failed (status \(process.terminationStatus))")
-                    continuation.resume(throwing: Failure.failed("the command-line tool could not answer"))
-                }
+                let text = String(decoding: result.err, as: UTF8.self)
+                let firstLine = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+                SpeedyShared.log.notice("1Password command failed (status \(result.status, privacy: .public)): \(String(firstLine.prefix(200)), privacy: .public)")
+                continuation.resume(throwing: classify(text))
             }
+        }
+    }
+
+    /// What op's error text means for the tech.
+    static func classify(_ errorText: String) -> Failure {
+        let message = errorText.lowercased()
+        if message.contains("integration") || message.contains("no accounts configured") || message.contains("connecting to desktop app")
+            || message.contains("app is not running") || message.contains("operation not permitted")
+            || message.contains("no account found") {   // what a blocked op says: it cannot see the app's accounts
+            return .integrationOff(message)
+        }
+        if message.contains("cancel") || message.contains("dismissed") || message.contains("authorization") {
+            return .cancelled
+        }
+        return .failed("the command-line tool could not answer")
+    }
+
+    /// `responsibility_spawnattrs_setdisclaim` (in libSystem since macOS 10.14; Terminal-style apps, LLDB and
+    /// Chromium use it). Without it macOS counts `op` as Speedy Bot itself, and then refuses it 1Password's own data
+    /// folder, where the socket to the 1Password app lives ("Speedy Bot reading another app's data": denied with no
+    /// prompt). Disclaimed, `op` answers for itself, and it is made by the same developer as the 1Password app.
+    private typealias SetDisclaim = @convention(c) (UnsafeMutablePointer<posix_spawnattr_t?>, Int32) -> Int32
+    private static let setDisclaim: SetDisclaim? = {
+        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "responsibility_spawnattrs_setdisclaim") else { return nil }   // RTLD_DEFAULT
+        return unsafeBitCast(symbol, to: SetDisclaim.self)
+    }()
+
+    /// Starts `path` with `arguments` (stdin empty, no other open files passed on, signals as new), reads its output
+    /// and error text to the end and waits for it. nil: it could not be started.
+    static func execute(_ path: String, _ arguments: [String], disclaim: Bool) -> (status: Int32, out: Data, err: Data)? {
+        let outPipe = Pipe(), errPipe = Pipe()
+        var actions: posix_spawn_file_actions_t?
+        var attributes: posix_spawnattr_t?
+        guard posix_spawn_file_actions_init(&actions) == 0 else { return nil }
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        guard posix_spawnattr_init(&attributes) == 0 else { return nil }
+        defer { posix_spawnattr_destroy(&attributes) }
+        posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
+        posix_spawn_file_actions_adddup2(&actions, outPipe.fileHandleForWriting.fileDescriptor, 1)
+        posix_spawn_file_actions_adddup2(&actions, errPipe.fileHandleForWriting.fileDescriptor, 2)
+        var noSignals = sigset_t(), allSignals = sigset_t()
+        sigemptyset(&noSignals)
+        sigfillset(&allSignals)
+        posix_spawnattr_setsigmask(&attributes, &noSignals)
+        posix_spawnattr_setsigdefault(&attributes, &allSignals)
+        // Only stdin/out/err reach op (CLOEXEC_DEFAULT closes every other descriptor Speedy Bot has open).
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF))
+        if disclaim, let setDisclaim { _ = setDisclaim(&attributes, 1) }
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["OP_FORMAT"] = nil
+        let argv: [UnsafeMutablePointer<CChar>?] = ([path] + arguments).map { strdup($0) } + [nil]
+        let envp: [UnsafeMutablePointer<CChar>?] = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
+        defer { (argv + envp).forEach { free($0) } }
+
+        var pid: pid_t = 0
+        let spawned = posix_spawn(&pid, path, &actions, &attributes, argv, envp)
+        // The parent's copies of the write ends must go, or reading to the end never ends.
+        try? outPipe.fileHandleForWriting.close()
+        try? errPipe.fileHandleForWriting.close()
+        guard spawned == 0 else {
+            try? outPipe.fileHandleForReading.close()
+            try? errPipe.fileHandleForReading.close()
+            return nil
+        }
+        // Read both pipes while it runs (a big vault list fills a pipe's buffer).
+        final class Box: @unchecked Sendable { var data = Data() }
+        let outBox = Box()
+        let group = DispatchGroup()
+        group.enter()
+        DispatchQueue.global().async { outBox.data = outPipe.fileHandleForReading.readDataToEndOfFile(); group.leave() }
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        group.wait()   // the reader is done before its data is used
+        var status: Int32 = 0
+        while waitpid(pid, &status, 0) == -1 && errno == EINTR {}
+        try? outPipe.fileHandleForReading.close()
+        try? errPipe.fileHandleForReading.close()
+        // Exited normally: its exit code; killed by a signal: 128 + the signal, as a shell reports it.
+        let code: Int32 = (status & 0x7f) == 0 ? (status >> 8) & 0xff : 128 + (status & 0x7f)
+        return (code, outBox.data, errData)
+    }
+
+    /// For `--check-1password`: can `op` reach the 1Password app when started by Speedy Bot, the old way (counted as
+    /// Speedy Bot) and the way Speedy Bot uses (answering for itself)? `op whoami` asks for no unlock.
+    static func connectionReport() -> [String] {
+        guard let path = cliPath else { return ["op is not installed"] }
+        return [false, true].map { disclaim in
+            let name = disclaim ? "op on its own (used)" : "op as Speedy Bot (old)"
+            guard let r = execute(path, ["whoami"], disclaim: disclaim) else { return "\(name): could not start" }
+            let err = String(decoding: r.err, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            let reached = r.status == 0 || err.lowercased().contains("not signed in")
+            return "\(name): \(reached ? "REACHES the 1Password app" : "CANNOT reach the 1Password app") (status \(r.status)) \(err.prefix(160))"
         }
     }
 

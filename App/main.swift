@@ -505,6 +505,18 @@ if CommandLine.arguments.contains("--browser-probe") {
     exit(0)
 }
 
+// `--check-1password`: can `op` reach the 1Password app when Speedy Bot starts it? Start this copy through
+// LaunchServices (open -n -a "Speedy Bot" --args --check-1password) so macOS counts it as Speedy Bot, as it does the
+// running app; the answer is printed and logged ("check-1password:").
+if CommandLine.arguments.contains("--check-1password") {
+    diagnosticRun()
+    for line in OnePassword.connectionReport() {
+        print("check-1password: \(line)")
+        SpeedyShared.log.notice("check-1password: \(line, privacy: .public)")
+    }
+    exit(0)
+}
+
 // `--check-chat`: would auto-send send into ChatGPT's message box as it is right now? The same rule auto-send uses
 // (ScreenshotPasteController.sendBlocker), so a change in how ChatGPT draws its box shows up here, at install,
 // instead of as screenshots that quietly stop sending. Exit 0: would send; 1: would not; 2: no ChatGPT to look at.
