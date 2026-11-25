@@ -283,6 +283,15 @@ public final class Composer: @unchecked Sendable {
         return (main, focus)
     }
 
+    /// Puts the keyboard in the message box through accessibility (a chat website in a browser: the keyboard may be
+    /// anywhere on the page, or in the address bar). True when the box took it.
+    public func focusBox() -> Bool {
+        if textArea == nil { locate() }
+        guard let box = textArea else { return false }
+        if (ChatSend.attr(box, kAXFocusedAttribute) as? Bool) == true { return true }
+        return AXUIElementSetAttributeValue(box, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success
+    }
+
     /// Finds the message box: the focused text area of the window, else the last one (the box is at the bottom),
     /// and the composer around it (a few levels up).
     private func locate() {

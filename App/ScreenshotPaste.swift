@@ -1254,8 +1254,10 @@ final class ScreenshotPasteController {
             // confirmed.
             let blindTarget = target == .claude || PasteTarget.isBrowser(app)
             var blindReturn = false
+            var browserBox: Composer?   // a chat website's message box, which gets the keyboard before the paste
             if thenSend {
                 let composer = Composer(pid: app.processIdentifier, windowID: windowID)
+                if PasteTarget.isBrowser(app) { browserBox = composer }
                 let lookStarted = Date()
                 var before = await Task.detached { () -> ComposerState in
                     let deadline = Date().addingTimeInterval(blindTarget ? 0 : 3)   // paste and Return: one look is enough
@@ -1319,6 +1321,14 @@ final class ScreenshotPasteController {
             // tech's next one may land before the paste is done).
             if let returnTo {
                 self.recentAutoPaste = (returnTo, app.processIdentifier, Date().addingTimeInterval(5))
+            }
+
+            // A chat website: the keyboard may be on a link, a button or the address bar; it goes into the message
+            // box first (where it is already, nothing changes).
+            if PasteTarget.isBrowser(app), target != nil {
+                let box = browserBox ?? Composer(pid: app.processIdentifier, windowID: windowID)
+                let took = await Task.detached { box.focusBox() }.value
+                if !took { SpeedyShared.log.notice("browser: the message box could not be given the keyboard") }
             }
 
             // Only the current ChatGPT app is known to route a paste to its message box from anywhere in the
@@ -1385,7 +1395,10 @@ final class ScreenshotPasteController {
                     // front and the tech has not pressed a key or clicked since the paste (that would be theirs).
                     let pastedAt = Date()
                     try? await Task.sleep(for: .milliseconds(700))
-                    if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier,
+                    // In a browser, Return must go to a message box: on a focused link or button it would click it.
+                    let keyboardInBox = !PasteTarget.isBrowser(app)
+                        || Paster.focusedElementRole(pid: app.processIdentifier) == "AXTextArea"
+                    if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier, keyboardInBox,
                        !Self.input(since: pastedAt), !TextTyper.physicalModifiersDown(), stillWanted() {
                         Paster.postReturn()
                         SpeedyShared.log.notice("auto-send: Return pressed in \(name, privacy: .public) (its message box cannot be read)")
