@@ -864,6 +864,7 @@ final class ScreenshotPasteController {
         if case .file = ref { kind = "saved file" } else { kind = "clipboard" }
         SpeedyShared.log.notice("screenshot arrived (\(kind, privacy: .public)); trigger=\(self.trigger.rawValue, privacy: .public); pointer was elsewhere=\(self.sawPointerElsewhere)")
         primeChatApps()
+        primeBrowsers()
         startHoverTimer()
         syncTriggers()
     }
@@ -1198,12 +1199,38 @@ final class ScreenshotPasteController {
         releaseIfIdle()
     }
 
-    /// A browser woken for a paste: its switch goes off again a few seconds after, unless another paste is under way.
+    /// Chromium browsers woken for a chat website, and until when they stay so (building the page takes Chrome
+    /// about 3 s, so it is kept for the next screenshot for two minutes).
+    private var browserAwakeUntil: [pid_t: Date] = [:]
+
+    private func wakeBrowser(_ app: NSRunningApplication) {
+        ChatSend.wakeAccessibility(pid: app.processIdentifier)
+        browserAwakeUntil[app.processIdentifier] = Date().addingTimeInterval(120)
+    }
+
+    /// A screenshot has come and auto-send may send it: a Chromium browser showing a chat website starts building
+    /// its page now, so the paste does not have to wait for it.
+    private func primeBrowsers() {
+        guard autoSendFromSession, pasteEnabled else { return }
+        var seen = Set<pid_t>()
+        for window in WindowHitTest.onScreenWindows() where !seen.contains(window.ownerPID) {
+            guard let app = NSRunningApplication(processIdentifier: window.ownerPID), PasteTarget.showsPageOnlyWhenAsked(app),
+                  PasteTarget.matching(app, window: window, in: targets) != nil else { continue }
+            seen.insert(window.ownerPID)
+            wakeBrowser(app)
+            releaseBrowserSoon(app)
+        }
+    }
+
+    /// A woken browser's switch goes off again once it has not been needed for two minutes and no paste is under way.
     private func releaseBrowserSoon(_ app: NSRunningApplication) {
         let pid = app.processIdentifier
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+        browserAwakeUntil[pid] = max(browserAwakeUntil[pid] ?? .distantPast, Date().addingTimeInterval(120))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 121) {
             MainActor.assumeIsolated {
-                if self.pasting { self.releaseBrowserSoon(app); return }
+                guard let until = self.browserAwakeUntil[pid] else { return }
+                if self.pasting || Date() < until { self.releaseBrowserSoon(app); return }
+                self.browserAwakeUntil[pid] = nil
                 ChatSend.releaseAccessibility(pid: pid)
             }
         }
@@ -1406,16 +1433,18 @@ final class ScreenshotPasteController {
             defer { if wokeBrowser { self.releaseBrowserSoon(app) } }
             if PasteTarget.showsPageOnlyWhenAsked(app), target != nil {
                 wokeBrowser = true
-                ChatSend.wakeAccessibility(pid: app.processIdentifier)
+                self.wakeBrowser(app)
                 let probe = Composer(pid: app.processIdentifier, windowID: windowID)
+                // Chrome takes about 3 s to build the page the first time; a paste that only pastes does not wait.
+                let tries = thenSend ? 25 : 1
                 let ready = await Task.detached { () -> Bool in
-                    for _ in 0..<10 {
+                    for _ in 0..<tries {
                         if probe.read().text != nil { return true }
                         try? await Task.sleep(for: .milliseconds(200))
                     }
                     return false
                 }.value
-                SpeedyShared.log.notice("browser: \(app.localizedName ?? "the browser", privacy: .public) page \(ready ? "readable" : "still not readable after 2 s", privacy: .public)")
+                SpeedyShared.log.notice("browser: \(app.localizedName ?? "the browser", privacy: .public) page \(ready ? "readable" : "not readable", privacy: .public)")
             }
 
             /// The tech's clipboard could not be set aside (it now holds the screenshot): every message about a paste
@@ -1471,6 +1500,14 @@ final class ScreenshotPasteController {
                     before = settled
                 }
                 lookRelocations = composer.relocations
+                // Chrome reports a website's placeholder as the box's text. With no Send button (grok.com shows one
+                // only while the box holds something) and no answer running, the box is empty: that text is its
+                // placeholder, and counts as empty here and after the paste.
+                if PasteTarget.isBrowser(app), let t = before.typed, !t.isEmpty, before.sendButton == nil, !before.streaming {
+                    composer.learnEmpty(t)
+                    before = await Task.detached { composer.read() }.value
+                    SpeedyShared.log.notice("browser: the empty box reads its placeholder (\(t.count) characters); taken as empty")
+                }
                 if blindTarget {
                     // Paste and Return: only text seen in the box (where it can be read at all) holds it back.
                     if let typed = before.typed, !typed.isEmpty {

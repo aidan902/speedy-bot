@@ -29,6 +29,8 @@ rm -rf "$DEST.old"
 mv "$DEST.new" "$DEST"
 rm -rf "$DEST.old"
 codesign --verify --strict "$DEST"
+# A fresh date on the bundle makes macOS draw the current icon (its icon cache otherwise kept the first, orange one).
+touch "$DEST"
 "$LSREGISTER" -u "$APP" 2>/dev/null || true
 "$LSREGISTER" -f "$DEST" 2>/dev/null || true
 open -g -a "$DEST" "speedybot://start"   # this copy, not whichever one was registered last (the build folder)

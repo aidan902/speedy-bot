@@ -154,8 +154,11 @@ final class AppState: ObservableObject {
         let storedTargets = (SpeedyShared.defaults.stringArray(forKey: SpeedyShared.pasteTargetsKey) ?? []).compactMap(PasteTarget.init(rawValue:))
         pasteTargets = storedTargets.isEmpty ? [.chatGPT] : Set(storedTargets)
         typingShortcut = HotKeySpec.load(.typing).flatMap { $0.leavesBareModifierTapOnRemote ? nil : $0 }
-        incident = SpeedyShared.defaults.string(forKey: SpeedyShared.incidentKey) ?? ""
-        recentIncidents = Array((SpeedyShared.defaults.stringArray(forKey: SpeedyShared.recentIncidentsKey) ?? []).prefix(3))
+        let storedIncident = SpeedyShared.defaults.string(forKey: SpeedyShared.incidentKey) ?? ""
+        incident = storedIncident
+        let storedRecents = Array((SpeedyShared.defaults.stringArray(forKey: SpeedyShared.recentIncidentsKey) ?? []).prefix(3))
+        // One set before Speedy Bot kept recent ones is the first of them.
+        recentIncidents = storedRecents.isEmpty && !storedIncident.isEmpty ? [storedIncident] : storedRecents
         docsRoot = SpeedyShared.defaults.string(forKey: SpeedyShared.docsFolderKey).map { URL(fileURLWithPath: $0, isDirectory: true) }
             ?? Documentation.defaultRoot
     }

@@ -286,6 +286,15 @@ public final class Composer: @unchecked Sendable {
     /// conversation, a new chat). Anything waiting to send treats that as "this is not the box I pasted into".
     public private(set) var relocations = 0
     private var foundOnce = false
+    /// Text a website's box shows when empty that a browser reports as its contents (Chrome reads grok.com's
+    /// placeholder "Ask, create images, or build anything…" as the box's value): counted as empty from now on.
+    private var learnedEmpty: [String] = []
+
+    /// The box reads `text` while it is known to be empty: that text is its placeholder.
+    public func learnEmpty(_ text: String) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !t.isEmpty, !learnedEmpty.contains(t) { learnedEmpty.append(t) }
+    }
 
     public init(pid: pid_t, windowID: CGWindowID) {
         self.pid = pid
@@ -387,7 +396,7 @@ public final class Composer: @unchecked Sendable {
             }
             let enabled = send.flatMap { ChatSend.attr($0, kAXEnabledAttribute) as? Bool }
             return ComposerState(text: text, sendButton: send, sendEnabled: enabled, streaming: streaming, buttons: buttons,
-                                 emptyTexts: emptyTexts, images: images, extras: extras)
+                                 emptyTexts: emptyTexts + learnedEmpty, images: images, extras: extras)
         }
         return .unreadable
     }
