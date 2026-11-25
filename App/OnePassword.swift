@@ -17,6 +17,16 @@ enum OnePassword {
     enum Failure: Error {
         case notInstalled, integrationOff(String), cancelled, failed(String)
 
+        /// For the log: which failure, never the tool's own words.
+        var kind: String {
+            switch self {
+            case .notInstalled: return "not installed"
+            case .integrationOff: return "CLI integration off or app not reachable"
+            case .cancelled: return "not unlocked / cancelled"
+            case .failed: return "failed"
+            }
+        }
+
         var message: String {
             switch self {
             case .notInstalled: return "The 1Password command-line tool is not installed (brew install --cask 1password-cli)"
@@ -134,6 +144,11 @@ enum OnePassword {
     }
 }
 
+/// A panel that can take the keyboard (and the search box's typing) while another app stays in front.
+private final class KeyPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+}
+
 /// The search box over the 1Password vault that the keypad's Password key opens over a ScreenConnect session.
 /// Return types the password into the session; Option-Return types the username, Tab, then the password. Esc closes.
 @MainActor
@@ -162,24 +177,47 @@ final class PasswordPicker: NSObject, NSWindowDelegate {
     /// What a pick does: (item, with username).
     private var onPick: ((OnePassword.Item, Bool) -> Void)?
 
-    func show(session: String, onPick: @escaping (OnePassword.Item, Bool) -> Void) {
+    /// `over`: the session window's frame (AppKit coordinates), to open the box over it.
+    func show(session: String, over: NSRect? = nil, onPick: @escaping (OnePassword.Item, Bool) -> Void) {
         close()
         let model = Model(session: session)
         self.model = model
         self.onPick = onPick
         let view = PasswordPickerView(model: model, pick: { [weak self] item, withUser in self?.pick(item, withUser: withUser) })
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 520, height: 420),
-                            styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
+        // A key press from the keypad is not a click in Speedy Bot, so macOS will not bring Speedy Bot to the front
+        // for it. The search box is therefore a panel that takes the keyboard without Speedy Bot coming to the front,
+        // and stays up while another app is in front (a plain panel hides itself then: the box opened unseen).
+        let panel = KeyPanel(contentRect: NSRect(x: 0, y: 0, width: 520, height: 420),
+                             styleMask: [.titled, .closable, .fullSizeContentView, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.title = "Type a 1Password password"
         panel.titlebarAppearsTransparent = true
+        panel.isFloatingPanel = true
         panel.level = .floating
+        panel.hidesOnDeactivate = false
+        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]   // over a full-screen session too
         panel.isReleasedWhenClosed = false
         panel.delegate = self
         panel.contentView = NSHostingView(rootView: view)
-        panel.center()
+        if let frame = over, let screen = NSScreen.screens.first(where: { $0.frame.intersects(frame) }) ?? NSScreen.main {
+            // Centred on the session window (given in AppKit's bottom-left coordinates), kept on its screen.
+            let visible = screen.visibleFrame
+            var origin = NSPoint(x: frame.midX - 260, y: frame.midY - 210)
+            origin.x = min(max(origin.x, visible.minX), visible.maxX - 520)
+            origin.y = min(max(origin.y, visible.minY), visible.maxY - 420)
+            panel.setFrameOrigin(origin)
+        } else {
+            panel.center()
+        }
         self.panel = panel
-        NSApp.activate(ignoringOtherApps: true)
-        panel.makeKeyAndOrderFront(nil)
+        panel.orderFrontRegardless()
+        panel.makeKey()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak panel] in
+            MainActor.assumeIsolated {
+                guard let panel, panel.isVisible else { return }
+                SpeedyShared.log.notice("1Password: picker \(panel.isKeyWindow ? "has" : "does not have", privacy: .public) the keyboard")
+                if !panel.isKeyWindow { Toast.show("Click the 1Password search box, then type", seconds: 2.5) }
+            }
+        }
         // Arrows move the selection and Esc closes, wherever the keyboard is in the panel.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, event.window === self.panel, let model = self.model else { return event }
@@ -214,15 +252,18 @@ final class PasswordPicker: NSObject, NSWindowDelegate {
         Task { @MainActor in
             do {
                 let ranked = OnePassword.ranked(try await OnePassword.list(), session: session)
+                SpeedyShared.log.notice("1Password: \(ranked.items.count, privacy: .public) items listed\(ranked.matched ? ", one matches the session" : "", privacy: .public)")
                 guard self.model === model else { return }
                 model.items = ranked.items
                 // Chosen in advance only when it matches this session; otherwise the tech picks or searches.
                 model.selection = ranked.matched ? ranked.items.first?.id : nil
                 model.status = ranked.items.isEmpty ? "No logins in 1Password" : nil
             } catch let failure as OnePassword.Failure {
+                SpeedyShared.log.notice("1Password: list failed: \(failure.kind, privacy: .public)")
                 guard self.model === model else { return }
                 model.status = failure.message
             } catch {
+                SpeedyShared.log.notice("1Password: list failed")
                 model.status = "1Password could not be read"
             }
         }

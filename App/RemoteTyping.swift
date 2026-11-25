@@ -233,7 +233,12 @@ final class RemoteTypingController {
         guard OnePassword.cliPath != nil else { Toast.show(OnePassword.Failure.notInstalled.message, seconds: 4); return }
         let window = WindowHitTest.frontWindow(ofPID: front.processIdentifier)
         SpeedyShared.log.notice("1Password: picker opened over the session")
-        picker.show(session: focus.title ?? "") { [weak self] item, withUser in
+        // CG window bounds are top-left based; AppKit's are bottom-left from the primary screen.
+        let over = window.map { w -> NSRect in
+            let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+            return NSRect(x: w.bounds.minX, y: primaryHeight - w.bounds.maxY, width: w.bounds.width, height: w.bounds.height)
+        }
+        picker.show(session: focus.title ?? "", over: over) { [weak self] item, withUser in
             self?.typePick(item, withUser: withUser, session: front, window: window, focus: focus.probe)
         }
     }
