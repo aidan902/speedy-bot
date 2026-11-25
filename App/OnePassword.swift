@@ -214,7 +214,10 @@ enum OnePassword {
     /// customer on sharepoint.com, azurewebsites.net, myshopify.com …) is listed first but never chosen in advance.
     /// `host`: the address it was matched to (nil unless matched by address); `read`: the address read, matched or not;
     /// `savedFor`: the chosen login's own saved address when that is not exactly the one read.
-    static func ranked(_ items: [Item], session: String, hosts: [String] = []) -> (items: [Item], matched: Bool, host: String?, read: String?, savedFor: String?) {
+    /// `preferred`: the login the tech picked last time on this machine (or one named alike); with no web address
+    /// read, it comes first and is chosen (`usedPreferred`).
+    static func ranked(_ items: [Item], session: String, hosts: [String] = [], preferred: String? = nil)
+        -> (items: [Item], matched: Bool, host: String?, read: String?, savedFor: String?, usedPreferred: Bool) {
         let words = Set(session.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
             .filter { $0.count >= 3 && !titleNoise.contains($0) })
         func wordScore(_ item: Item) -> Int {
@@ -228,13 +231,18 @@ enum OnePassword {
             if a.1 != b.1 { return a.1 > b.1 }
             return a.0.title.localizedCaseInsensitiveCompare(b.0.title) == .orderedAscending
         }
+        if read == nil, let preferred, let at = sorted.firstIndex(where: { $0.0.id == preferred }) {
+            var order = sorted.map(\.0)
+            order.insert(order.remove(at: at), at: 0)
+            return (order, true, nil, nil, nil, true)
+        }
         let top = sorted.first?.1 ?? (0, 0)
         let byAddress = top.0 >= 2
         let matched = byAddress || (top.0 == 0 && top.1 > 0)
         let savedFor = byAddress ? sorted.first.flatMap { item in
             item.0.urls.compactMap { host(of: $0) }.first { $0 != read && siteMatch(item.0, host: read!) >= 2 && related($0, read!) }
         } : nil
-        return (sorted.map(\.0), matched, byAddress ? read : nil, read, savedFor)
+        return (sorted.map(\.0), matched, byAddress ? read : nil, read, savedFor, false)
     }
 
     /// One address is the other or inside it (qsys.com and my.qsys.com), not two neighbours under a shared one.
@@ -396,6 +404,8 @@ final class PasswordPicker: NSObject, NSWindowDelegate {
         @Published var status: String? = "Waiting for 1Password…"
         /// Which site the list was matched to (or that nothing in 1Password is saved for the site read).
         @Published var note: String?
+        /// What one press does on the Windows screen showing in the session (sign-in, admin prompt, lock screen).
+        @Published var windowsNote: String?
         /// Typed keys go into the search (false: they go to the app in front, e.g. after 1Password's Touch ID prompt).
         @Published var hasKeyboard = true
         /// Where the pick is typed, in the caption ("ScreenConnect - Front Desk - Connected", "portal.fm.example.com on this Mac").
@@ -432,8 +442,10 @@ final class PasswordPicker: NSObject, NSWindowDelegate {
     /// rank logins. `over`: the target window's frame (AppKit coordinates), to open the box over it. `hosts`: the
     /// sites the page may be on, most likely first, read while 1Password lists its logins. `target`: the app the
     /// pick is typed into, put back in front if 1Password's prompt took the front.
+    /// `preferred`: the login picked last time on this machine, and the note saying so.
     func show(place: String, session: String, over: NSRect? = nil, target: NSRunningApplication? = nil,
-              hosts: @escaping @Sendable () async -> [String], onPick: @escaping (OnePassword.Item, Bool) -> Void) {
+              preferred: (id: String, note: String)? = nil,
+              reading: @escaping @Sendable () async -> PageReading, onPick: @escaping (OnePassword.Item, Bool) -> Void) {
         close()
         self.target = target
         let model = Model(place: place)
@@ -524,13 +536,13 @@ final class PasswordPicker: NSObject, NSWindowDelegate {
             }
         }
         // The site is read while 1Password answers (that takes longer), so it costs no waiting.
-        let reading = Task { await hosts() }
+        let readingTask = Task { await reading() }
         Task { @MainActor in
             do {
                 let items = try await OnePassword.list()
                 // A site still being read gets a moment more; a slow one is not waited for.
-                let read = await Self.value(of: reading, within: 1.5) ?? []
-                let ranked = OnePassword.ranked(items, session: session, hosts: read)
+                let read = await Self.value(of: readingTask, within: 1.5) ?? PageReading(hosts: [], windowsNote: nil)
+                let ranked = OnePassword.ranked(items, session: session, hosts: read.hosts, preferred: preferred?.id)
                 SpeedyShared.log.notice("1Password: \(ranked.items.count, privacy: .public) items listed\(ranked.host != nil ? ", matched to the page" : (ranked.matched ? ", one matches the session" : ""), privacy: .public)")
                 guard self.model === model else { return }
                 model.items = ranked.items
@@ -538,6 +550,8 @@ final class PasswordPicker: NSObject, NSWindowDelegate {
                 model.selection = ranked.matched ? ranked.items.first?.id : nil
                 model.note = ranked.host.map { page in "Matched to \(page)" + (ranked.savedFor.map { ", login saved for \($0)" } ?? "") }
                     ?? ranked.read.map { "Page: \($0). No login saved for this address" + (ranked.matched ? "; the one chosen fits the session's name" : ", so none is chosen") }
+                    ?? (ranked.usedPreferred ? preferred?.note : nil)
+                model.windowsNote = read.windowsNote
                 model.status = ranked.items.isEmpty ? "No logins in 1Password" : nil
                 self.takeKeyboardBack()
             } catch let failure as OnePassword.Failure {
@@ -653,6 +667,9 @@ private struct PasswordPickerView: View {
                         .font(.callout.weight(.semibold)).foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(.plain)
+            }
+            if let windows = model.windowsNote, model.status == nil {
+                Label(windows, systemImage: "lock.desktopcomputer").font(.caption).foregroundStyle(Color.accentColor)
             }
             if let note = model.note, model.status == nil {
                 Label(note, systemImage: note.hasPrefix("Matched") ? "checkmark.circle.fill" : "questionmark.circle")

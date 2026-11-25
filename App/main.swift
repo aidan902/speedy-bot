@@ -206,11 +206,11 @@ if CommandLine.arguments.contains("--selftest") {
     expect("reset before 7pm", fmt.string(from: AppState.lastIncidentReset(before: at("2026-11-25T18:59:00-06:00"), calendar: cal)), "2026-11-24T19:00:00-06:00")
     expect("reset at 7pm", fmt.string(from: AppState.lastIncidentReset(before: at("2026-11-25T19:00:00-06:00"), calendar: cal)), "2026-11-25T19:00:00-06:00")
     expect("reset morning", fmt.string(from: AppState.lastIncidentReset(before: at("2026-11-26T08:00:00-06:00"), calendar: cal)), "2026-11-25T19:00:00-06:00")
-    let reading = SessionProbe.parse("PS C:\\> junk\nSPEEDYBOT 172.16.37.46/23 gw=172.16.36.1 host=FLC-JACKSON pub=203.0.113.9\nPS C:\\>")
+    let reading = SessionProbe.parse("PS C:\\> junk\nSPEEDYBOT 172.16.37.46/23 gw=172.16.36.1 host=LAB-ROOM12 pub=203.0.113.9\nPS C:\\>")
     expect("probe ip", reading?.ip.description ?? "nil", "172.16.37.46")
     expect("probe prefix", String(reading?.prefix ?? -1), "23")
     expect("probe gw", reading?.gateway ?? "nil", "172.16.36.1")
-    expect("probe host", reading?.host ?? "nil", "FLC-JACKSON")
+    expect("probe host", reading?.host ?? "nil", "LAB-ROOM12")
     expect("probe pub", reading?.publicIP ?? "nil", "203.0.113.9")
     let ocr = SessionProbe.parse("SPEEDY BOT 10.1.2.3 / 24 gw=10.1.2.1 host=PC1 pub=none")
     expect("ocr spaced", "\(ocr?.ip.description ?? "nil")/\(ocr?.prefix ?? -1) \(ocr?.publicIP ?? "nopub")", "10.1.2.3/24 nopub")
@@ -218,7 +218,7 @@ if CommandLine.arguments.contains("--selftest") {
     expect("command", PingCommand.arp.line(ip: "1.2.3.4", port: 443, custom: ""), "ping -n 1 1.2.3.4 | Out-Null; arp -a 1.2.3.4")
     expect("custom", PingCommand.custom.line(ip: "1.2.3.4", port: 443, custom: "ping -l 1400 {ip} -t"), "ping -l 1400 1.2.3.4 -t")
     expect("custom no placeholder", PingCommand.custom.line(ip: "1.2.3.4", port: 443, custom: "tracert"), "tracert 1.2.3.4")
-    expect("session name", SessionWindow(pid: 1, windowID: 1, title: "ScreenConnect - FLC-JACKSON - Connected", bounds: .zero).name, "FLC-JACKSON")
+    expect("session name", SessionWindow(pid: 1, windowID: 1, title: "ScreenConnect - LAB-ROOM12 - Connected", bounds: .zero).name, "LAB-ROOM12")
     expect("unifi url", UniFiConfig.normalize("unifi.example.com/"), "https://unifi.example.com")
     let link = { (s: String) in SpeedyLink.action(of: URL(string: s)!)?.rawValue ?? "nil" }
     expect("link toggle", link("speedybot://toggle"), "toggle")
@@ -272,8 +272,8 @@ if CommandLine.arguments.contains("--selftest") {
     expect("marker spaced", SessionProbe.marker("SB 7342OPEN", token: "7342", word: "OPEN") ? "yes" : "no", "yes")
     expect("marker other", SessionProbe.marker("SB7342 RUN", token: "7342", word: "OPEN") ? "yes" : "no", "no")
     expect("probe script short enough for a prompt, no quotes/percent", SessionProbe.script.contains("\"") || SessionProbe.script.contains("%") ? "bad" : "ok", "ok")
-    let split = SessionProbe.parse("SPEEDYBOT\n172.16.37.46/23 gw=172.16.36.1\nhost=FLC-JACKSON pub=")
-    expect("probe split lines", "\(split?.ip.description ?? "nil")/\(split?.prefix ?? -1) \(split?.gateway ?? "nogw") \(split?.host ?? "nohost") \(split?.publicIP ?? "nopub")", "172.16.37.46/23 172.16.36.1 FLC-JACKSON nopub")
+    let split = SessionProbe.parse("SPEEDYBOT\n172.16.37.46/23 gw=172.16.36.1\nhost=LAB-ROOM12 pub=")
+    expect("probe split lines", "\(split?.ip.description ?? "nil")/\(split?.prefix ?? -1) \(split?.gateway ?? "nogw") \(split?.host ?? "nohost") \(split?.publicIP ?? "nopub")", "172.16.37.46/23 172.16.36.1 LAB-ROOM12 nopub")
     for f in failures { print("FAIL \(f)") }
     // Shortcuts pressed in a session must not leave a bare Windows-key or Alt tap on the remote.
     expect("⌃Space safe on Windows", String(HotKeySpec.defaultPassword.leavesBareModifierTapOnRemote), "false")
@@ -303,6 +303,28 @@ if CommandLine.arguments.contains("--selftest") {
     let inside = OnePassword.ranked([OnePassword.Item(id: "q", title: "Q", username: "", vault: "V", urls: ["https://my.qsys.com/login"])],
                                     session: "", hosts: ["qsys.com"])
     expect("one inside the other", "\(inside.matched) \(inside.host ?? "-") \(inside.savedFor ?? "-")", "true qsys.com my.qsys.com")
+    // Windows sign-in, admin prompt and lock screen, read off a session window (no web address on it).
+    func windows(_ texts: [String]) -> String { WindowsPrompt.read(texts.enumerated().map { line($0.element, Double($0.offset) / 10) }).map { String(describing: $0) } ?? "nil" }
+    expect("other user", windows(["Other user", "User name", "Password", "Sign in to: CORP", "How do I sign in to another domain?"]), "signIn(userBox: true)")
+    expect("one user", windows(["LocalAdmin", "Password", "Sign-in options"]), "signIn(userBox: false)")
+    expect("lock screen", windows(["3:40", "Wednesday, November 25"]), "lockScreen")
+    expect("ctrl alt del", windows(["Press Ctrl+Alt+Delete to unlock."]), "ctrlAltDel")
+    expect("uac", windows(["User Account Control", "Do you want to allow this app to make changes to your device?", "User name", "Password", "Yes", "No"]), "adminPrompt(userBox: true)")
+    expect("pin", windows(["PIN", "I forgot my PIN", "Sign-in options"]), "pin")
+    expect("web login is not Windows", windows(["Sign In", "Email Address", "Password", "Continue"]), "nil")
+    expect("local account", [WindowsPrompt.localAccount("LocalAdmin"), WindowsPrompt.localAccount("CORP\\jsmith"), WindowsPrompt.localAccount("a@b.com")].joined(separator: " "), ".\\LocalAdmin CORP\\jsmith a@b.com")
+    expect("sign straight in", String(describing: WindowsPrompt.signIn(userBox: true).typing(username: "LocalAdmin", password: "pw")), String(describing: WindowsPrompt.Typing.text(".\\LocalAdmin\tpw\n")))
+    expect("no user name, no typing", String(String(describing: WindowsPrompt.signIn(userBox: true).typing(username: "", password: "pw")).hasPrefix("refuse")), "true")
+    expect("machine", PickMemory.machine(fromTitle: "ScreenConnect - LAB-ROOM12 - Connected") ?? "nil", "LAB-ROOM12")
+    expect("name start", [PickMemory.prefix(of: "LAB-ROOM12") ?? "nil", PickMemory.prefix(of: "DESKTOP-4F2K9") ?? "nil", PickMemory.prefix(of: "FRONTDESK") ?? "nil"].joined(separator: " "), "LAB nil nil")
+    let picks = ["LAB-LOBBY": PickMemory.Pick(id: "lobby", at: 1), "LAB-GYM": PickMemory.Pick(id: "gym", at: 2), "ABC-1": PickMemory.Pick(id: "abc", at: 3)]
+    expect("same machine", PickMemory.choose(from: picks, machine: "LAB-LOBBY")?.id ?? "nil", "lobby")
+    expect("same name start, newest", PickMemory.choose(from: picks, machine: "LAB-ROOM12")?.id ?? "nil", "gym")
+    expect("unrelated machine", PickMemory.choose(from: picks, machine: "XYZ-1")?.id ?? "nil", "nil")
+    let remembered = OnePassword.ranked(logins, session: "", hosts: [], preferred: "2")
+    expect("remembered first", "\(remembered.items.first?.id ?? "-") \(remembered.matched) \(remembered.usedPreferred)", "2 true true")
+    let rememberedButPage = OnePassword.ranked(logins, session: "", hosts: ["qsys.com"], preferred: "2")
+    expect("a page's address beats memory", "\(rememberedButPage.items.first?.id ?? "-") \(rememberedButPage.usedPreferred)", "1 false")
     expect("address in a query", OnePassword.host(of: "accounts.example.com/signin?continue=https://mail.example.com/") ?? "nil", "accounts.example.com")
     let noSite = OnePassword.ranked(logins, session: "ScreenConnect - Front Desk - Connected", hosts: ["nothing.example.org"])
     expect("no site: session name", "\(noSite.items.first?.id ?? "-") \(noSite.matched) \(noSite.host ?? "-") \(noSite.read ?? "-")", "2 true - nothing.example.org")
@@ -553,8 +575,11 @@ if CommandLine.arguments.contains("--check-1password") {
     Task.detached {
         for w in sessions {
             let started = Date()
-            let hosts = await OnePassword.remotePageHosts(windowID: w.windowID)
-            found.all.append("session \"\(w.title)\": \(hosts.isEmpty ? "no site read" : hosts.joined(separator: ", ")) (\(Int(Date().timeIntervalSince(started) * 1000)) ms)")
+            let lines = await SessionProbe.screenLines(windowID: w.windowID) ?? []
+            let hosts = OnePassword.pageHosts(in: lines)
+            let windows = hosts.isEmpty ? WindowsPrompt.read(lines).map { "Windows: \($0.note)" } ?? "no site or Windows sign-in read" : hosts.joined(separator: ", ")
+            let remembered = PickMemory.machine(fromTitle: w.title).flatMap(PickMemory.recall(machine:)).map { "; remembered: \($0.note)" } ?? ""
+            found.all.append("session \"\(w.title)\": \(windows)\(remembered) (\(Int(Date().timeIntervalSince(started) * 1000)) ms)")
         }
         for (pid, name) in browsers {
             let started = Date()

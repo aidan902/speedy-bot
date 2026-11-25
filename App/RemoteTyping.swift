@@ -294,6 +294,11 @@ final class RemoteTypingController {
         let name: String
         /// On this Mac: the site the page was on when the key was pressed; nothing is typed once it is elsewhere.
         let pageHost: String?
+        /// A session: its window read off the screen when the key was pressed (sites, or a Windows sign-in).
+        var screen: Task<[SessionProbe.Line], Never>? = nil
+        var windowID: CGWindowID? = nil
+        /// A session: the machine's name, for remembering which login went with it.
+        var machine: String? = nil
     }
 
     /// The keypad's Password key (or the menu): a search over the local 1Password vault, opened over the ScreenConnect
@@ -340,10 +345,22 @@ final class RemoteTypingController {
         let window = WindowHitTest.frontWindow(ofPID: front.processIdentifier)
         SpeedyShared.log.notice("1Password: picker opened over the session")
         let windowID = window?.windowID
-        let target = PasswordTarget(app: front, window: window, focus: focus.probe, name: "The ScreenConnect session", pageHost: nil)
-        picker.show(place: focus.title ?? "the session", session: focus.title ?? "", over: window.map(Self.appKitFrame), target: front, hosts: {
+        // Read once, while 1Password lists: the sites a browser there shows, or else a Windows sign-in screen.
+        let screen = Task<[SessionProbe.Line], Never> {
             guard let windowID else { return [] }
-            return await OnePassword.remotePageHosts(windowID: windowID)
+            return await SessionProbe.screenLines(windowID: windowID) ?? []
+        }
+        let machine = PickMemory.machine(fromTitle: focus.title ?? "")
+        let target = PasswordTarget(app: front, window: window, focus: focus.probe, name: "The ScreenConnect session", pageHost: nil,
+                                    screen: screen, windowID: windowID, machine: machine)
+        picker.show(place: focus.title ?? "the session", session: focus.title ?? "", over: window.map(Self.appKitFrame), target: front,
+                    preferred: machine.flatMap(PickMemory.recall(machine:)), reading: {
+            let lines = await screen.value
+            let hosts = OnePassword.pageHosts(in: lines)
+            SpeedyShared.log.notice("1Password: remote page read as \(hosts.first ?? "no site", privacy: .private)")
+            let prompt = hosts.isEmpty ? WindowsPrompt.read(lines) : nil
+            if let prompt { SpeedyShared.log.notice("1Password: Windows screen \(String(describing: prompt), privacy: .public)") }
+            return PageReading(hosts: hosts, windowsNote: prompt?.note)
         }) { [weak self] item, withUser in
             self?.typePick(item, withUser: withUser, target: target)
         }
@@ -380,7 +397,8 @@ final class RemoteTypingController {
             let window = WindowHitTest.frontWindow(ofPID: pid)
             SpeedyShared.log.notice("1Password: picker opened over a browser page on \(host, privacy: .public)")
             let target = PasswordTarget(app: front, window: window, focus: focus.probe, name: "The browser", pageHost: host)
-            self.picker.show(place: "\(host) on this Mac", session: "", over: window.map(Self.appKitFrame), target: front, hosts: { [host] }) { [weak self] item, withUser in
+            self.picker.show(place: "\(host) on this Mac", session: "", over: window.map(Self.appKitFrame), target: front,
+                             reading: { PageReading(hosts: [host], windowsNote: nil) }) { [weak self] item, withUser in
                 self?.typePick(item, withUser: withUser, target: target)
             }
         }
@@ -390,6 +408,7 @@ final class RemoteTypingController {
         // From the pick on, Esc stops it (and is not passed on to the remote), as does switching Speedy Bot off.
         pickInFlight = true
         localRun = target.pageHost != nil
+        if let machine = target.machine { PickMemory.remember(itemID: item.id, machine: machine) }
         cancelled.set(false)
         escKey?.register()
         let me = ProcessInfo.processInfo.processIdentifier
@@ -415,10 +434,9 @@ final class RemoteTypingController {
                 stop("1Password could not be read")
                 return
             }
-            let password = secrets.password, username = withUser ? secrets.username : ""
+            let password = secrets.password
             if stoppedByTech() { stop("Stopped. Nothing was typed"); return }
             guard !password.isEmpty else { stop("That item has no password"); return }
-            guard !withUser || !username.isEmpty else { stop("That item has no username. Press Return for the password only"); return }
             guard !app.isTerminated else { stop("\(target.name) closed. Nothing was typed"); return }
             // Only from Speedy Bot's own search (just closed), the target itself, or 1Password (its Touch ID prompt
             // leaves it in front): if the tech has moved to another app meanwhile, they are doing something else.
@@ -449,9 +467,39 @@ final class RemoteTypingController {
                 if stoppedByTech() { stop("Stopped. Nothing was typed"); return }
             }
             if TextTyper.capsLockOn { stop("Caps Lock is on. Turn it off and press Password again"); return }
-            guard !self.typing, let (plan, options) = self.typingPlan(withUser ? username + "\t" + password : password, secret: true),
-                  !plan.keys.isEmpty else { stop(nil); return }
-            SpeedyShared.log.notice("1Password: typing a pick into \(target.pageHost == nil ? "the session" : "the browser", privacy: .public)\(withUser ? " (username and password)" : "", privacy: .public)")
+            // What to type: on a Windows sign-in or admin prompt in the session, the user (as this PC's own account)
+            // and password and Enter, or the password and Enter, whatever Return or ⌥Return; elsewhere as asked.
+            var text: String
+            if withUser {
+                guard !secrets.username.isEmpty else { stop("That item has no username. Press Return for the password only"); return }
+                text = secrets.username + "\t" + password
+            } else {
+                text = password
+            }
+            var how = withUser ? " (username and password)" : ""
+            if target.pageHost == nil, let screen = target.screen {
+                let lines = await screen.value
+                if OnePassword.pageHosts(in: lines).isEmpty, var prompt = WindowsPrompt.read(lines) {
+                    if prompt == .lockScreen, let windowID = target.windowID {
+                        // A bare Shift tap lifts the lock screen picture; then the screen is read again.
+                        WindowsPrompt.wake()
+                        try? await Task.sleep(for: .milliseconds(1300))
+                        if stoppedByTech() { stop("Stopped. Nothing was typed"); return }
+                        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid, target.focus.stillFocused() else {
+                            stop("\(target.name) is no longer in front. Nothing was typed")
+                            return
+                        }
+                        prompt = WindowsPrompt.read(await SessionProbe.screenLines(windowID: windowID) ?? []) ?? .lockScreen
+                    }
+                    switch prompt.typing(username: secrets.username, password: password) {
+                    case .refuse(let why): stop(why); return
+                    case .text(let t): text = t
+                    }
+                    how = " (Windows \(String(describing: prompt)))"
+                }
+            }
+            guard !self.typing, let (plan, options) = self.typingPlan(text, secret: true), !plan.keys.isEmpty else { stop(nil); return }
+            SpeedyShared.log.notice("1Password: typing a pick into \(target.pageHost == nil ? "the session" : "the browser", privacy: .public)\(how, privacy: .public)")
             self.pickInFlight = false
             self.start(plan: plan, options: options, focus: target.focus, releaseKey: CGKeyCode(kVK_Return), retry: "Password")
         }
