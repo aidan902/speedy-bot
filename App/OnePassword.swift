@@ -195,28 +195,40 @@ enum OnePassword {
                                           "session", "sessions", "remote", "access", "support", "meeting", "guest", "host", "client", "the"]
 
     /// The order the search lists logins in. `hosts`: the sites the page may be on, most likely first (read off the
-    /// remote browser's address bar, or this Mac's browser). The first of them that any login is saved for decides:
-    /// logins for that very address first, then others for the same site, then logins whose title shares a word
-    /// (3+ letters, not ScreenConnect's own) with the session's name, then A-Z.
-    /// `matched`: the first one fits the page or the session (only then is it chosen in advance); `host`: the site it
-    /// fits; `read`: the most likely site, whether or not any login is saved for it.
-    static func ranked(_ items: [Item], session: String, hosts: [String] = []) -> (items: [Item], matched: Bool, host: String?, read: String?) {
+    /// remote browser's address bar, or this Mac's browser). Only the first, the likeliest address bar, counts: a
+    /// site named in the page, a tab, a bookmark or a title bar never chooses a login. Logins saved for that address
+    /// (or one inside the other, as qsys.com and my.qsys.com) first, then others on the same site, then logins whose
+    /// title shares a word (3+ letters, not ScreenConnect's own) with the session's name, then A-Z.
+    /// `matched`: the first one is chosen in advance: saved for that address (or one inside it), or, with no login
+    /// saved for the site at all, fits the session's name. A login for another part of the same site (another
+    /// customer on sharepoint.com, azurewebsites.net, myshopify.com …) is listed first but never chosen in advance.
+    /// `host`: the address it was matched to (nil unless matched by address); `read`: the address read, matched or not;
+    /// `savedFor`: the chosen login's own saved address when that is not exactly the one read.
+    static func ranked(_ items: [Item], session: String, hosts: [String] = []) -> (items: [Item], matched: Bool, host: String?, read: String?, savedFor: String?) {
         let words = Set(session.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
             .filter { $0.count >= 3 && !titleNoise.contains($0) })
         func wordScore(_ item: Item) -> Int {
             let hay = (item.title + " " + item.urls.joined(separator: " ")).lowercased()
             return words.filter { hay.contains($0) }.count
         }
-        let host = hosts.first { h in items.contains { siteMatch($0, host: h) > 0 } }
-        func score(_ item: Item) -> (Int, Int) { (host.map { siteMatch(item, host: $0) } ?? 0, wordScore(item)) }
+        let read = hosts.first
+        func score(_ item: Item) -> (Int, Int) { (read.map { siteMatch(item, host: $0) } ?? 0, wordScore(item)) }
         let scored = items.map { ($0, score($0)) }
         let sorted = scored.sorted { a, b in
             if a.1 != b.1 { return a.1 > b.1 }
             return a.0.title.localizedCaseInsensitiveCompare(b.0.title) == .orderedAscending
         }
         let top = sorted.first?.1 ?? (0, 0)
-        return (sorted.map(\.0), top.0 > 0 || top.1 > 0, host, hosts.first)
+        let byAddress = top.0 >= 2
+        let matched = byAddress || (top.0 == 0 && top.1 > 0)
+        let savedFor = byAddress ? sorted.first.flatMap { item in
+            item.0.urls.compactMap { host(of: $0) }.first { $0 != read && siteMatch(item.0, host: read!) >= 2 && related($0, read!) }
+        } : nil
+        return (sorted.map(\.0), matched, byAddress ? read : nil, read, savedFor)
     }
+
+    /// One address is the other or inside it (qsys.com and my.qsys.com), not two neighbours under a shared one.
+    static func related(_ a: String, _ b: String) -> Bool { a == b || a.hasSuffix("." + b) || b.hasSuffix("." + a) }
 
     // MARK: which site the page is on
 
@@ -225,7 +237,8 @@ enum OnePassword {
     static func host(of address: String) -> String? {
         let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !trimmed.contains(where: \.isWhitespace) else { return nil }
-        guard var host = URL(string: trimmed.contains("://") ? trimmed : "https://" + trimmed)?.host?.lowercased(),
+        let hasScheme = trimmed.range(of: #"^[A-Za-z][A-Za-z0-9+.-]*://"#, options: .regularExpression) != nil
+        guard var host = URL(string: hasScheme ? trimmed : "https://" + trimmed)?.host?.lowercased(),
               host.contains("."), !host.hasPrefix("."), !host.hasSuffix(".") else { return nil }
         if host.hasPrefix("www.") { host.removeFirst(4) }
         return host
@@ -242,14 +255,15 @@ enum OnePassword {
         return labels.suffix(keep).joined(separator: ".")
     }
 
-    /// How well a login's saved websites fit a site: 2 the same address, 1 another part of the same site, 0 none.
+    /// How well a login's saved websites fit a site: 3 the same address, 2 one inside the other (qsys.com and
+    /// my.qsys.com), 1 another part of the same site (two customers' a.sharepoint.com and b.sharepoint.com), 0 none.
     static func siteMatch(_ item: Item, host: String) -> Int {
         let site = siteDomain(host)
         var best = 0
         for url in item.urls {
             guard let h = self.host(of: url) else { continue }
-            if h == host { return 2 }
-            if siteDomain(h) == site { best = 1 }
+            if h == host { return 3 }
+            if related(h, host) { best = max(best, 2) } else if siteDomain(h) == site { best = max(best, 1) }
         }
         return best
     }
@@ -294,14 +308,17 @@ enum OnePassword {
     static func remotePageHosts(windowID: CGWindowID) async -> [String] {
         guard let lines = await SessionProbe.screenLines(windowID: windowID) else { return [] }
         let hosts = pageHosts(in: lines)
-        SpeedyShared.log.notice("1Password: remote page read as \(hosts.first ?? "no site", privacy: .public)")
+        SpeedyShared.log.notice("1Password: remote page read as \(hosts.first ?? "no site", privacy: .private)")
         return hosts
     }
 
-    /// The page in a browser's front window on this Mac, through accessibility (no waking needed; well under a
-    /// second): the window's document, else the page's own address, else the address bar's text.
-    /// `inAddressBar`: the keyboard is in the address bar itself, so no field on the page is chosen.
-    static func browserPage(pid: pid_t) async -> (host: String?, inAddressBar: Bool) {
+    /// The page that holds the keyboard in a browser on this Mac, through accessibility (no waking needed; well under
+    /// a second). It is the page around the focused element (in split view, the pane being typed in), checked against
+    /// the window's own address when the browser gives one; without a page around the focus (Chrome before its page is
+    /// read), the window's address. Nil when they disagree or nothing can be read.
+    /// `inBrowserField`: the keyboard is in one of the browser's own fields (address bar, find bar, Arc's command bar),
+    /// not on a page.
+    static func browserPage(pid: pid_t) async -> (host: String?, inBrowserField: Bool) {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 continuation.resume(returning: readBrowserPage(pid: pid))
@@ -309,7 +326,7 @@ enum OnePassword {
         }
     }
 
-    private static func readBrowserPage(pid: pid_t) -> (host: String?, inAddressBar: Bool) {
+    private static func readBrowserPage(pid: pid_t) -> (host: String?, inBrowserField: Bool) {
         func attr(_ e: AXUIElement, _ name: String) -> AnyObject? {
             var v: AnyObject?
             return AXUIElementCopyAttributeValue(e, name as CFString, &v) == .success ? v : nil
@@ -321,32 +338,28 @@ enum OnePassword {
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.3)
         guard let window = element(attr(app, kAXFocusedWindowAttribute)) else { return (nil, false) }
-        let focused = element(attr(app, kAXFocusedUIElementAttribute))
+        AXUIElementSetMessagingTimeout(window, 0.3)
         let document = (attr(window, "AXDocument") as? String).flatMap(host(of:))
-        var pageURL: String?
-        var bar: AXUIElement?
-        var queue = [window]
-        var seen = 0
-        let started = Date()
-        while !queue.isEmpty, seen < 800, Date().timeIntervalSince(started) < 1.5, pageURL == nil || bar == nil {
-            let e = queue.removeFirst()
-            seen += 1
-            AXUIElementSetMessagingTimeout(e, 0.3)
-            let role = attr(e, kAXRoleAttribute) as? String ?? ""
-            if role == "AXWebArea" {
-                if pageURL == nil, let url = attr(e, "AXURL") as? URL { pageURL = url.absoluteString }
-                continue   // never into the page itself
+        let focused = element(attr(app, kAXFocusedUIElementAttribute))
+        // Up from the keyboard: the outermost page around it is the pane's own page (an inner one is a frame in it).
+        var page: String?
+        if var e = focused {
+            for _ in 0..<80 {
+                AXUIElementSetMessagingTimeout(e, 0.3)
+                if (attr(e, kAXRoleAttribute) as? String) == "AXWebArea", let url = attr(e, "AXURL") as? URL { page = url.absoluteString }
+                guard let parent = element(attr(e, kAXParentAttribute)), !CFEqual(parent, window) else { break }
+                e = parent
             }
-            if bar == nil, role == "AXTextField" || role == "AXComboBox" {
-                let id = attr(e, kAXIdentifierAttribute) as? String ?? ""
-                let label = ((attr(e, kAXDescriptionAttribute) as? String) ?? (attr(e, kAXTitleAttribute) as? String) ?? "").lowercased()
-                if id == "WEB_BROWSER_ADDRESS_AND_SEARCH_FIELD" || label.contains("address") { bar = e; continue }
-            }
-            if let kids = attr(e, kAXChildrenAttribute) as? [AXUIElement] { queue.append(contentsOf: kids) }
         }
-        let inBar = bar.map { b in focused.map { CFEqual($0, b) } ?? false } ?? false
-        let barHost = inBar ? nil : bar.flatMap { attr($0, kAXValueAttribute) as? String }.flatMap(host(of:))
-        return (document ?? pageURL.flatMap(host(of:)) ?? barHost, inBar)
+        if page == nil, let focused {
+            let role = attr(focused, kAXRoleAttribute) as? String ?? ""
+            if ["AXTextField", "AXComboBox", "AXSearchField", "AXTextArea"].contains(role) { return (nil, true) }
+        }
+        if let page = page.flatMap(host(of:)) {
+            if let document, document != page { return (nil, false) }   // the window and the typed-in pane disagree
+            return (page, false)
+        }
+        return (document, false)
     }
 }
 
@@ -400,6 +413,8 @@ final class PasswordPicker: NSObject, NSWindowDelegate {
     /// The search is up. It can hold the keyboard while ScreenConnect (or the browser) stays the app in front, so
     /// nothing that checks the front app can tell where typed keys go meanwhile.
     var isOpen: Bool { panel != nil }
+    /// 1Password has not answered yet (or could not be read): there is nothing to choose from.
+    var isWaiting: Bool { model.map { $0.items.isEmpty } ?? false }
 
     /// `place`: where the pick is typed, for the caption. `session`: the ScreenConnect window's name, whose words
     /// rank logins. `over`: the target window's frame (AppKit coordinates), to open the box over it. `hosts`: the
@@ -502,12 +517,13 @@ final class PasswordPicker: NSObject, NSWindowDelegate {
                 // A site still being read gets a moment more; a slow one is not waited for.
                 let read = await Self.value(of: reading, within: 1.5) ?? []
                 let ranked = OnePassword.ranked(items, session: session, hosts: read)
-                SpeedyShared.log.notice("1Password: \(ranked.items.count, privacy: .public) items listed\(ranked.host.map { ", matched to \($0)" } ?? (ranked.matched ? ", one matches the session" : ""), privacy: .public)")
+                SpeedyShared.log.notice("1Password: \(ranked.items.count, privacy: .public) items listed\(ranked.host != nil ? ", matched to the page" : (ranked.matched ? ", one matches the session" : ""), privacy: .public)")
                 guard self.model === model else { return }
                 model.items = ranked.items
                 // Chosen in advance only when it fits the page or the session; otherwise the tech picks or searches.
                 model.selection = ranked.matched ? ranked.items.first?.id : nil
-                model.note = ranked.host.map { "Matched to \($0)" } ?? ranked.read.map { "Nothing in 1Password is saved for \($0)" }
+                model.note = ranked.host.map { page in "Matched to \(page)" + (ranked.savedFor.map { ", login saved for \($0)" } ?? "") }
+                    ?? ranked.read.map { "Page: \($0). No login saved for this address" + (ranked.matched ? "; the one chosen fits the session's name" : ", so none is chosen") }
                 model.status = ranked.items.isEmpty ? "No logins in 1Password" : nil
                 self.takeKeyboardBack()
             } catch let failure as OnePassword.Failure {

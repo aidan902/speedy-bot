@@ -257,6 +257,7 @@ final class AppState: ObservableObject {
         screenshot.stop()
         ChatSend.releaseAccessibility(wait: true)   // ChatGPT's flag goes off before the app exits
         typer.setEnabled(false)
+        typer.setPasswordEnabled(false)
         capture.setEnabled(false)
         ScreencapturePrefs.restore()
         SpeedyShared.defaults.set(false, forKey: SpeedyShared.appRunningKey)
@@ -347,8 +348,10 @@ final class AppState: ObservableObject {
             break
         }
         let pasteKey = action == .paste || action == .pasteSend
+        // The Password key also types on .fm sites on this Mac, so it works in Auto with no session open.
+        let passwordKey = action == .password && masterEnabled
         // In Auto, just after a session closes, its last screenshot can still be pasted from the keypad.
-        guard active || (pasteKey && lingering && screenshot.hasShotFromSession(closedAt: sessionClosedAt)) else {
+        guard active || passwordKey || (pasteKey && lingering && screenshot.hasShotFromSession(closedAt: sessionClosedAt)) else {
             Toast.show(mode == .off ? "Speedy Bot is off" : "Speedy Bot: Auto, waiting for a ScreenConnect session", seconds: 2)
             return
         }
@@ -456,6 +459,7 @@ final class AppState: ObservableObject {
             screenshot.start(source: .clipboard)
         }
         typer.setEnabled(active && remoteTyping)
+        typer.setPasswordEnabled(masterEnabled && remoteTyping)
         capture.setEnabled(active && captureWindow && screenConnectOpen)
     }
 

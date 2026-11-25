@@ -293,6 +293,16 @@ if CommandLine.arguments.contains("--selftest") {
                   OnePassword.Item(id: "3", title: "QSC other", username: "c", vault: "V", urls: ["https://my.qsys.com"])]
     let bySite = OnePassword.ranked(logins, session: "ScreenConnect - Front Desk - Connected", hosts: ["qsys.com"])
     expect("site first", bySite.items.map(\.id).joined() + " \(bySite.matched) \(bySite.host ?? "-")", "132 true qsys.com")
+    let tenant = OnePassword.ranked([OnePassword.Item(id: "b", title: "Client B", username: "", vault: "V", urls: ["https://clientb.sharepoint.com"])],
+                                    session: "", hosts: ["clienta.sharepoint.com"])
+    expect("other customer's tenant listed, not chosen", "\(tenant.items.first?.id ?? "-") \(tenant.matched) \(tenant.host ?? "-")", "b false -")
+    let pageText = OnePassword.ranked([OnePassword.Item(id: "k", title: "Bank", username: "", vault: "V", urls: ["https://bank.example.com"])],
+                                      session: "", hosts: ["evil.example.net", "bank.example.com"])
+    expect("page text never chooses", "\(pageText.matched) \(pageText.host ?? "-") \(pageText.read ?? "-")", "false - evil.example.net")
+    let inside = OnePassword.ranked([OnePassword.Item(id: "q", title: "Q", username: "", vault: "V", urls: ["https://my.qsys.com/login"])],
+                                    session: "", hosts: ["qsys.com"])
+    expect("one inside the other", "\(inside.matched) \(inside.host ?? "-") \(inside.savedFor ?? "-")", "true qsys.com my.qsys.com")
+    expect("address in a query", OnePassword.host(of: "accounts.example.com/signin?continue=https://mail.example.com/") ?? "nil", "accounts.example.com")
     let noSite = OnePassword.ranked(logins, session: "ScreenConnect - Front Desk - Connected", hosts: ["nothing.example.org"])
     expect("no site: session name", "\(noSite.items.first?.id ?? "-") \(noSite.matched) \(noSite.host ?? "-") \(noSite.read ?? "-")", "2 true - nothing.example.org")
     print("multi ping checks: \(failures.isEmpty ? "all passed" : "\(failures.count) failed")")
@@ -550,7 +560,7 @@ if CommandLine.arguments.contains("--check-1password") {
             let page = await OnePassword.browserPage(pid: pid)
             let host = page.host ?? "no address read"
             let local = page.host.map { OnePassword.typesLocally(onHost: $0) ? "types here (.fm)" : "not .fm" } ?? ""
-            found.all.append("\(name): \(host) \(local)\(page.inAddressBar ? ", keyboard in the address bar" : "") (\(Int(Date().timeIntervalSince(started) * 1000)) ms)")
+            found.all.append("\(name): \(host) \(local)\(page.inBrowserField ? ", keyboard in the browser's own field" : "") (\(Int(Date().timeIntervalSince(started) * 1000)) ms)")
         }
         done.signal()
     }

@@ -69,6 +69,14 @@ namespace Loupedeck.SpeedyBotPlugin
             return KeyArt.Draw(size, word, ready ? color : KeyArt.Grey, !ready);
         }
 
+        /// In its colour whenever Speedy Bot is running and not Off (also while Auto waits for a session).
+        public static BitmapImage ImageUnlessOff(PluginImageSize size, String word, BitmapColor color)
+        {
+            var mode = SpeedyBotState.Shared.Mode;
+            var ready = mode != SpeedyMode.Off && mode != SpeedyMode.NotRunning;
+            return KeyArt.Draw(size, word, ready ? color : KeyArt.Grey, !ready);
+        }
+
         /// A setting key: green while the setting is on, faded grey while it is off (or Speedy Bot is not running).
         public static BitmapImage Setting(PluginImageSize size, String word, Boolean on)
         {
@@ -96,7 +104,8 @@ namespace Loupedeck.SpeedyBotPlugin
         private void Repaint() => this.ActionImageChanged();
         protected override void RunCommand(String actionParameter) => AppSignal.Post("password");
         protected override String GetCommandDisplayName(String actionParameter, PluginImageSize imageSize) => "Password";
-        protected override BitmapImage GetCommandImage(String actionParameter, PluginImageSize imageSize) => AppSignal.Image(imageSize, "PASSWORD", KeyArt.Orange);
+        // Orange whenever Speedy Bot is not Off: it also types on .fm sites on this Mac with no session open.
+        protected override BitmapImage GetCommandImage(String actionParameter, PluginImageSize imageSize) => AppSignal.ImageUnlessOff(imageSize, "PASSWORD", KeyArt.Orange);
     }
 
     public class CaptureCommand : PluginDynamicCommand

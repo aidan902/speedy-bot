@@ -67,6 +67,11 @@ final class RemoteTypingController {
     private var escKey: GlobalHotKey?
     private var observers: [NSObjectProtocol] = []
     private var enabled = false
+    /// The Password key: Speedy Bot is not Off and typing is on. Unlike `enabled`, no session has to be open (it
+    /// also types on .fm sites on this Mac).
+    private var passwordEnabled = false
+    /// A 1Password pick for a page on this Mac is being fetched or typed: a session closing does not stop it.
+    private var localRun = false
 
     private var typing = false
     private var targetPID: pid_t = 0
@@ -89,8 +94,18 @@ final class RemoteTypingController {
         } else {
             gate?.enabled = false
             passwordGate?.enabled = false
-            cancelled.set(true)
+            if !(localRun && passwordEnabled) { cancelled.set(true) }
             pendingConfirm = nil
+        }
+    }
+
+    func setPasswordEnabled(_ on: Bool) {
+        passwordEnabled = on
+        if on {
+            if gate == nil { build() }   // Esc and the front-app watch; the session shortcuts still follow `enabled`
+        } else {
+            cancelled.set(true)          // Off, or typing switched off: nothing more is typed anywhere
+            picker.close()
         }
     }
 
@@ -287,15 +302,18 @@ final class RemoteTypingController {
     /// typed into that window key by key, never through the clipboard. Pressed again while the search is up, it
     /// types the chosen login.
     func passwordFromKey() {
-        guard enabled else { Toast.show("Typing into ScreenConnect is switched off in Speedy Bot", seconds: 2.5); return }
+        guard passwordEnabled else { Toast.show("Typing into ScreenConnect is switched off in Speedy Bot", seconds: 2.5); return }
         guard !typing, !pickInFlight, !openingPicker else { return }
         if picker.isOpen {
-            if !picker.pickChosen() { Toast.show("Pick a login first, or type to search", seconds: 2) }
+            if !picker.pickChosen() {
+                Toast.show(picker.isWaiting ? "Wait for 1Password's list, then press Password again" : "Pick a login first, or type to search", seconds: 2)
+            }
             return
         }
         guard let front = NSWorkspace.shared.frontmostApplication else { return }
         guard OnePassword.cliPath != nil else { Toast.show(OnePassword.Failure.notInstalled.message, seconds: 4); return }
         if FrontmostAppGate.isScreenConnect(front) {
+            guard enabled else { Toast.show("Typing into ScreenConnect is switched off in Speedy Bot", seconds: 2.5); return }
             passwordForSession(front)
         } else if PasteTarget.isBrowser(front) {
             passwordForBrowser(front)
@@ -341,12 +359,17 @@ final class RemoteTypingController {
             self.openingPicker = false
             // The tech may have moved on while the page was read.
             guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid, !self.picker.isOpen, !self.typing, !self.pickInFlight else { return }
-            if page.inAddressBar {
+            if page.inBrowserField {
                 Toast.show("Click into the password field on the page first, then press Password", seconds: 3)
                 return
             }
             guard let host = page.host else {
-                Toast.show("Could not read this page's address, so nothing was opened", seconds: 3)
+                Toast.show("Could not tell which page has the keyboard, so nothing was opened. Click into the password field and try again", seconds: 3.5)
+                return
+            }
+            let title = WindowHitTest.frontWindow(ofPID: pid)?.title.lowercased() ?? ""
+            if title.contains("screenconnect") || title.contains("connectwise control") {
+                Toast.show("That is a ScreenConnect session in the browser. Use the ScreenConnect app for sessions", seconds: 3)
                 return
             }
             guard OnePassword.typesLocally(onHost: host) else {
@@ -366,6 +389,7 @@ final class RemoteTypingController {
     private func typePick(_ item: OnePassword.Item, withUser: Bool, target: PasswordTarget) {
         // From the pick on, Esc stops it (and is not passed on to the remote), as does switching Speedy Bot off.
         pickInFlight = true
+        localRun = target.pageHost != nil
         cancelled.set(false)
         escKey?.register()
         let me = ProcessInfo.processInfo.processIdentifier
@@ -373,10 +397,14 @@ final class RemoteTypingController {
         Task { @MainActor in
             @MainActor func stop(_ note: String?) {
                 self.pickInFlight = false
+                self.localRun = false
                 self.escKey?.unregister()
                 if let note { Toast.show(note, seconds: 3) }
             }
-            @MainActor func stoppedByTech() -> Bool { self.cancelled.get() || !self.enabled }
+            // A session pick needs session typing on; a pick for this Mac only needs Speedy Bot on (not Off).
+            @MainActor func stoppedByTech() -> Bool {
+                self.cancelled.get() || !(target.pageHost == nil ? self.enabled : self.passwordEnabled)
+            }
             let secrets: OnePassword.Secrets
             do {
                 secrets = try await OnePassword.secrets(of: item.id)
@@ -412,7 +440,7 @@ final class RemoteTypingController {
             // must not get the password).
             if let expected = target.pageHost {
                 let page = await OnePassword.browserPage(pid: pid)
-                guard page.host == expected, !page.inAddressBar else { stop("The page changed. Nothing was typed"); return }
+                guard page.host == expected, !page.inBrowserField else { stop("The page changed. Nothing was typed"); return }
                 if stoppedByTech() { stop("Stopped. Nothing was typed"); return }
             }
             if TextTyper.capsLockOn { stop("Caps Lock is on. Turn it off and press Password again"); return }
@@ -464,6 +492,7 @@ final class RemoteTypingController {
 
     private func finish(released: Bool, posted: Int, total: Int) {
         typing = false
+        localRun = false
         state.typing = false
         escKey?.unregister()
         let outcome = !released ? "modifiers still held" : posted < total ? "stopped early" : "complete"
