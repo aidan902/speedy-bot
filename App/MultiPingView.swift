@@ -56,7 +56,7 @@ struct MultiPingView: View {
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             HStack(alignment: .top, spacing: 14) {
-                field("IP address") { TextField("172.16.37.46", text: $state.remoteIP).frame(width: 140) }
+                field("IP address") { TextField("10.1.37.46", text: $state.remoteIP).frame(width: 140) }
                 field("Network size") {
                     Picker("Network size", selection: $state.prefix) {
                         ForEach(Array((8...30).reversed()), id: \.self) { p in

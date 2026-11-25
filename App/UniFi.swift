@@ -67,7 +67,7 @@ enum Keychain {
 struct UniFiSite: Sendable, Equatable {
     /// The internal name used in URLs ("default", "abc123") or the integration id.
     let name: String
-    /// What the tech sees: "Howard Payne University".
+    /// What the tech sees: "Example School".
     let desc: String
 }
 
@@ -87,7 +87,7 @@ struct UniFiClientInfo: Sendable, Equatable {
 
     var displayName: String? { name ?? hostname }
 
-    /// "BRW-SW-JACKSON · Port 40" or "AP name · SSID" or nil when neither is known.
+    /// "SW-CORE-1 · Port 40" or "AP name · SSID" or nil when neither is known.
     var whereabouts: String? {
         var bits: [String] = []
         if wired {
@@ -112,7 +112,7 @@ struct UniFiLookup: Sendable, Equatable {
     let clientsByIP: [String: UniFiClientInfo]
     let note: String?
 
-    /// "Howard Payne University · BRW-SW-JACKSON · Port 40 · FLC-JACKSON (Room PC)".
+    /// "Example School · SW-CORE-1 · Port 40 · LAB-ROOM12 (Room PC)".
     var summary: String {
         var bits: [String] = []
         if let site { bits.append(site.desc + (siteByPublicIP ? " (by public IP)" : "")) }

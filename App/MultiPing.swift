@@ -139,7 +139,7 @@ enum LaunchScript {
 
     private static func quoted(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "''") + "'" }
 
-    /// `'-NoExit -Command ping -t 172.16.37.'+$i` for a line that has the last octet in it (once or several times).
+    /// `'-NoExit -Command ping -t 10.1.37.'+$i` for a line that has the last octet in it (once or several times).
     private static func loopArgument(_ text: String) -> String {
         var expr = text.components(separatedBy: octet).map(quoted).joined(separator: "+$i+")
         if expr.hasSuffix("+''") { expr.removeLast(3) }

@@ -4,7 +4,7 @@ import Vision
 /// Finds out the remote machine's own address from inside a ScreenConnect session.
 ///
 /// A short PowerShell line is typed into the session; it prints one marker line
-/// (`SPEEDYBOT 172.16.37.46/23 gw=172.16.36.1 host=FLC-JACKSON pub=…`) and also copies it, so the answer comes
+/// (`SPEEDYBOT 10.1.37.46/23 gw=10.1.36.1 host=LAB-ROOM12 pub=…`) and also copies it, so the answer comes
 /// back two ways: through ScreenConnect's clipboard sharing, or by reading the session window off the screen.
 enum SessionProbe {
     static let marker = "SPEEDYBOT"

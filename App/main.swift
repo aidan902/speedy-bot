@@ -178,20 +178,20 @@ if CommandLine.arguments.contains("--selftest") {
     // The arithmetic behind Multi Ping, checked on every build.
     var failures: [String] = []
     func expect(_ name: String, _ got: String, _ want: String) { if got != want { failures.append("\(name): got \(got), want \(want)") } }
-    let base = IPv4("172.16.37.46")!
+    let base = IPv4("10.1.37.46")!
     expect("mask /23", IPv4.mask(prefix: 23).description, "255.255.254.0")
     expect("prefix of mask", String(IPv4.prefix(ofMask: "255.255.254.0") ?? -1), "23")
     expect("bad mask", String(IPv4.prefix(ofMask: "255.0.255.0") ?? -1), "-1")
-    expect("network /23", base.network(prefix: 23).description, "172.16.36.0")
-    expect("broadcast /23", base.broadcast(prefix: 23).description, "172.16.37.255")
+    expect("network /23", base.network(prefix: 23).description, "10.1.36.0")
+    expect("broadcast /23", base.broadcast(prefix: 23).description, "10.1.37.255")
     let ips = { (text: String, prefix: Int) in TargetParser.parse(text, base: base, prefix: prefix).targets.map { $0.ip?.description ?? "bad(\($0.input))" }.joined(separator: " ") }
-    expect("last octet", ips(".1", 24), "172.16.37.1")
-    expect("several", ips(".3 .5 .9", 24), "172.16.37.3 172.16.37.5 172.16.37.9")
-    expect("two octets", ips(".36.200, 37.1", 23), "172.16.36.200 172.16.37.1")
+    expect("last octet", ips(".1", 24), "10.1.37.1")
+    expect("several", ips(".3 .5 .9", 24), "10.1.37.3 10.1.37.5 10.1.37.9")
+    expect("two octets", ips(".36.200, 37.1", 23), "10.1.36.200 10.1.37.1")
     expect("full address", ips("10.0.0.1", 24), "10.0.0.1")
-    expect("range", ips(".10-.12", 24), "172.16.37.10 172.16.37.11 172.16.37.12")
-    expect("range plain", ips("10-12", 24), "172.16.37.10 172.16.37.11 172.16.37.12")
-    expect("duplicates", ips(".1 .1 172.16.37.1", 24), "172.16.37.1")
+    expect("range", ips(".10-.12", 24), "10.1.37.10 10.1.37.11 10.1.37.12")
+    expect("range plain", ips("10-12", 24), "10.1.37.10 10.1.37.11 10.1.37.12")
+    expect("duplicates", ips(".1 .1 10.1.37.1", 24), "10.1.37.1")
     expect("bad token", ips(".300 x", 24), "bad(.300) bad(x)")
     expect("outside", String(TargetParser.parse(".36.5", base: base, prefix: 24).targets.first?.insideNetwork ?? true), "false")
     expect("inside /23", String(TargetParser.parse(".36.5", base: base, prefix: 23).targets.first?.insideNetwork ?? false), "true")
@@ -206,10 +206,10 @@ if CommandLine.arguments.contains("--selftest") {
     expect("reset before 7pm", fmt.string(from: AppState.lastIncidentReset(before: at("2026-11-25T18:59:00-06:00"), calendar: cal)), "2026-11-24T19:00:00-06:00")
     expect("reset at 7pm", fmt.string(from: AppState.lastIncidentReset(before: at("2026-11-25T19:00:00-06:00"), calendar: cal)), "2026-11-25T19:00:00-06:00")
     expect("reset morning", fmt.string(from: AppState.lastIncidentReset(before: at("2026-11-26T08:00:00-06:00"), calendar: cal)), "2026-11-25T19:00:00-06:00")
-    let reading = SessionProbe.parse("PS C:\\> junk\nSPEEDYBOT 172.16.37.46/23 gw=172.16.36.1 host=LAB-ROOM12 pub=203.0.113.9\nPS C:\\>")
-    expect("probe ip", reading?.ip.description ?? "nil", "172.16.37.46")
+    let reading = SessionProbe.parse("PS C:\\> junk\nSPEEDYBOT 10.1.37.46/23 gw=10.1.36.1 host=LAB-ROOM12 pub=203.0.113.9\nPS C:\\>")
+    expect("probe ip", reading?.ip.description ?? "nil", "10.1.37.46")
     expect("probe prefix", String(reading?.prefix ?? -1), "23")
-    expect("probe gw", reading?.gateway ?? "nil", "172.16.36.1")
+    expect("probe gw", reading?.gateway ?? "nil", "10.1.36.1")
     expect("probe host", reading?.host ?? "nil", "LAB-ROOM12")
     expect("probe pub", reading?.publicIP ?? "nil", "203.0.113.9")
     let ocr = SessionProbe.parse("SPEEDY BOT 10.1.2.3 / 24 gw=10.1.2.1 host=PC1 pub=none")
@@ -248,32 +248,32 @@ if CommandLine.arguments.contains("--selftest") {
     expect("next screenshot", shot("Screenshot 2026-10-26 at 9.15.32 PM.png", "Screenshot 2026-10-26 at 9.15.33 PM.png"), "own")
     expect("same file", shot("Screenshot 2026-10-26 at 9.15.32 PM.png", "Screenshot 2026-10-26 at 9.15.32 PM.png"), "own")
     let w = { (ip: String, c: PingCommand) in LaunchScript.Window(ip: IPv4(ip)!, command: c) }
-    expect("launch one", LaunchScript.directRunLine([w("172.16.37.4", .pingForever)], port: 443, custom: "", tile: .off) ?? "nil",
-           "powershell -NoExit -Command \"ping -t 172.16.37.4\"")
-    expect("launch loop", LaunchScript.directRunLine([w("172.16.37.4", .pingForever), w("172.16.37.5", .pingForever), w("172.16.37.9", .pingForever)], port: 443, custom: "", tile: .off) ?? "nil",
-           "powershell -Command \"foreach($i in 4,5,9){start powershell ('-NoExit -Command ping -t 172.16.37.'+$i)}\"")
-    expect("launch mixed", LaunchScript.body([w("172.16.37.4", .pingForever), w("172.16.37.5", .tracert), w("10.0.0.7", .pingForever)], port: 443, custom: "", tile: .off),
-           "start powershell '-NoExit -Command ping -t 172.16.37.4';start powershell '-NoExit -Command tracert -d 172.16.37.5';start powershell '-NoExit -Command ping -t 10.0.0.7'")
-    expect("launch arp loop", LaunchScript.statements([w("172.16.37.4", .arp), w("172.16.37.5", .arp)], port: 443, custom: "").joined(separator: ";"),
-           "foreach($i in 4,5){start powershell ('-NoExit -Command ping -n 1 172.16.37.'+$i+' | Out-Null; arp -a 172.16.37.'+$i)}")
-    expect("launch custom quote", LaunchScript.statements([w("172.16.37.4", .custom)], port: 443, custom: "ping -t {ip} -l 1400 'x'").joined(separator: ";"),
-           "start powershell '-NoExit -Command ping -t 172.16.37.4 -l 1400 ''x'''")
-    let tiled = LaunchScript.body([w("172.16.37.4", .ping), w("172.16.37.5", .ping)], port: 443, custom: "", tile: .stacked)
-    expect("tile not direct", LaunchScript.directRunLine([w("172.16.37.4", .ping)], port: 443, custom: "", tile: .stacked) ?? "nil", "nil")
+    expect("launch one", LaunchScript.directRunLine([w("10.1.37.4", .pingForever)], port: 443, custom: "", tile: .off) ?? "nil",
+           "powershell -NoExit -Command \"ping -t 10.1.37.4\"")
+    expect("launch loop", LaunchScript.directRunLine([w("10.1.37.4", .pingForever), w("10.1.37.5", .pingForever), w("10.1.37.9", .pingForever)], port: 443, custom: "", tile: .off) ?? "nil",
+           "powershell -Command \"foreach($i in 4,5,9){start powershell ('-NoExit -Command ping -t 10.1.37.'+$i)}\"")
+    expect("launch mixed", LaunchScript.body([w("10.1.37.4", .pingForever), w("10.1.37.5", .tracert), w("10.0.0.7", .pingForever)], port: 443, custom: "", tile: .off),
+           "start powershell '-NoExit -Command ping -t 10.1.37.4';start powershell '-NoExit -Command tracert -d 10.1.37.5';start powershell '-NoExit -Command ping -t 10.0.0.7'")
+    expect("launch arp loop", LaunchScript.statements([w("10.1.37.4", .arp), w("10.1.37.5", .arp)], port: 443, custom: "").joined(separator: ";"),
+           "foreach($i in 4,5){start powershell ('-NoExit -Command ping -n 1 10.1.37.'+$i+' | Out-Null; arp -a 10.1.37.'+$i)}")
+    expect("launch custom quote", LaunchScript.statements([w("10.1.37.4", .custom)], port: 443, custom: "ping -t {ip} -l 1400 'x'").joined(separator: ";"),
+           "start powershell '-NoExit -Command ping -t 10.1.37.4 -l 1400 ''x'''")
+    let tiled = LaunchScript.body([w("10.1.37.4", .ping), w("10.1.37.5", .ping)], port: 443, custom: "", tile: .stacked)
+    expect("tile not direct", LaunchScript.directRunLine([w("10.1.37.4", .ping)], port: 443, custom: "", tile: .stacked) ?? "nil", "nil")
     expect("tile baseline", tiled.hasPrefix(LaunchScript.handles) ? "yes" : "no", "yes")
     expect("tile call", tiled.contains("-lt 2 -and $t -lt 40);[U.W]::TileWindows(0,1,0,$n.Count,[IntPtr[]]$n)}catch{") && tiled.hasSuffix("$x.TileHorizontally()}else{$x.TileVertically()}}") ? "yes" : "no", "yes")
     expect("tile no double quotes", tiled.contains("\"") ? "has quotes" : "clean", "clean")
     expect("tile no percent signs", tiled.contains("%") ? "has percent" : "clean", "clean")
     let many = (1...8).map { w("10.0.\($0).1", .pingForever) }   // eight lone addresses: well past the Run dialog's limit
     expect("long goes the other way", LaunchScript.directRunLine(many, port: 443, custom: "", tile: .off) ?? "nil", "nil")
-    expect("two groups still direct", LaunchScript.directRunLine([w("172.16.37.4", .ping), w("172.16.37.5", .ping), w("172.16.36.9", .ping)], port: 443, custom: "", tile: .off) ?? "nil",
-           "powershell -Command \"foreach($i in 4,5){start powershell ('-NoExit -Command ping 172.16.37.'+$i)};start powershell '-NoExit -Command ping 172.16.36.9'\"")
+    expect("two groups still direct", LaunchScript.directRunLine([w("10.1.37.4", .ping), w("10.1.37.5", .ping), w("10.1.36.9", .ping)], port: 443, custom: "", tile: .off) ?? "nil",
+           "powershell -Command \"foreach($i in 4,5){start powershell ('-NoExit -Command ping 10.1.37.'+$i)};start powershell '-NoExit -Command ping 10.1.36.9'\"")
     expect("marker open", SessionProbe.marker("PS C:\\> x\nSB7342 OPEN\n", token: "7342", word: "OPEN") ? "yes" : "no", "yes")
     expect("marker spaced", SessionProbe.marker("SB 7342OPEN", token: "7342", word: "OPEN") ? "yes" : "no", "yes")
     expect("marker other", SessionProbe.marker("SB7342 RUN", token: "7342", word: "OPEN") ? "yes" : "no", "no")
     expect("probe script short enough for a prompt, no quotes/percent", SessionProbe.script.contains("\"") || SessionProbe.script.contains("%") ? "bad" : "ok", "ok")
-    let split = SessionProbe.parse("SPEEDYBOT\n172.16.37.46/23 gw=172.16.36.1\nhost=LAB-ROOM12 pub=")
-    expect("probe split lines", "\(split?.ip.description ?? "nil")/\(split?.prefix ?? -1) \(split?.gateway ?? "nogw") \(split?.host ?? "nohost") \(split?.publicIP ?? "nopub")", "172.16.37.46/23 172.16.36.1 LAB-ROOM12 nopub")
+    let split = SessionProbe.parse("SPEEDYBOT\n10.1.37.46/23 gw=10.1.36.1\nhost=LAB-ROOM12 pub=")
+    expect("probe split lines", "\(split?.ip.description ?? "nil")/\(split?.prefix ?? -1) \(split?.gateway ?? "nogw") \(split?.host ?? "nohost") \(split?.publicIP ?? "nopub")", "10.1.37.46/23 10.1.36.1 LAB-ROOM12 nopub")
     for f in failures { print("FAIL \(f)") }
     // Shortcuts pressed in a session must not leave a bare Windows-key or Alt tap on the remote.
     expect("⌃Space safe on Windows", String(HotKeySpec.defaultPassword.leavesBareModifierTapOnRemote), "false")

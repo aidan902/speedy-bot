@@ -5,7 +5,7 @@ import Carbon.HIToolbox
 struct SessionWindow: Identifiable, Equatable, Sendable {
     let pid: pid_t
     let windowID: CGWindowID
-    /// "ScreenConnect - FLC-JACKSON - Connected" (the app's name when window titles cannot be read).
+    /// "ScreenConnect - LAB-ROOM12 - Connected" (the app's name when window titles cannot be read).
     let title: String
     let bounds: CGRect
     var id: CGWindowID { windowID }
@@ -16,7 +16,7 @@ struct SessionWindow: Identifiable, Equatable, Sendable {
         return parts.count >= 3 && parts[0].lowercased().contains("screenconnect") ? parts : nil
     }
 
-    /// "FLC-JACKSON" out of the title; the whole title when it has another shape.
+    /// "LAB-ROOM12" out of the title; the whole title when it has another shape.
     var name: String { titleParts.map { $0.dropFirst().dropLast().joined(separator: " - ") } ?? title }
 
     /// "Connected", "Stopped"… or nil when the title does not say.
@@ -25,7 +25,7 @@ struct SessionWindow: Identifiable, Equatable, Sendable {
     /// A session the remote machine is listening to. Unknown counts as yes (titles unreadable without Screen Recording).
     var connected: Bool { state.map { $0.caseInsensitiveCompare("Connected") == .orderedSame } ?? true }
 
-    /// "FLC-JACKSON (stopped)" for the picker.
+    /// "LAB-ROOM12 (stopped)" for the picker.
     var label: String { connected ? name : "\(name) (\(state?.lowercased() ?? "not connected"))" }
 }
 
