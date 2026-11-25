@@ -57,7 +57,7 @@ struct FocusProbe: @unchecked Sendable {
 final class RemoteTypingController {
     private unowned let state: AppState
     private var gate: FrontmostAppGate?
-    /// ⇧⌘Space (or the tech's own): the keypad's Password key from the keyboard, claimed only while a session is in front.
+    /// ⌃Space (or the tech's own): the keypad's Password key from the keyboard, claimed only while a session is in front.
     private var passwordGate: FrontmostAppGate?
     private var passwordSpec: HotKeySpec?
     /// The shortcut was pressed; the search opens once its keys are up.
@@ -128,7 +128,7 @@ final class RemoteTypingController {
         registerPasswordHotKey()
     }
 
-    /// (Re)creates the Password shortcut: the tech's own, or ⇧⌘Space. Not claimed
+    /// (Re)creates the Password shortcut: the tech's own, or ⌃Space. Not claimed
     /// at all when another of Speedy Bot's jobs already has that combination (a shortcut recorded before this one
     /// existed).
     private func registerPasswordHotKey() {
@@ -147,10 +147,10 @@ final class RemoteTypingController {
         passwordGate = g
     }
 
-    /// The Password shortcut. ScreenConnect has already passed its modifiers to the remote (⌘ as the Windows key, ⇧ as
-    /// Shift). The search would take the keyboard, so their key-ups would never reach the remote and Windows would
-    /// keep them held: the next keys typed there would be Windows-key shortcuts. So the search opens only once
-    /// every key of the shortcut is up and the session has passed that on.
+    /// The Password shortcut. ScreenConnect has already passed its modifiers to the remote (⌃ as Ctrl, ⌘ as the
+    /// Windows key, ⇧ as Shift). The search would take the keyboard, so their key-ups would never reach the remote and
+    /// Windows would keep them held: the next keys typed there would be Ctrl or Windows-key shortcuts. So the search
+    /// opens only once every key of the shortcut is up and the session has passed that on.
     private func passwordFromShortcut() {
         guard enabled, !typing, !pickInFlight, !openingPicker, !waitingForPasswordKeys else { return }
         waitingForPasswordKeys = true

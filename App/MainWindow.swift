@@ -301,7 +301,7 @@ struct MainView: View {
                 ShortcutRecorder(label: state.passwordShortcutLabel,
                                  resetLabel: state.passwordShortcut == nil ? nil : HotKeySpec.defaultPasswordLabel) { state.setPasswordShortcut($0) }
             }
-            Text("In a session: the keypad's Password key from the keyboard. Search the 1Password on this Mac; press it again (or Return) to type the chosen password.")
+            Text("In a session: the keypad's Password key from the keyboard. Search the 1Password on this Mac; press it again (or Return) to type the chosen password. Click the shortcut to choose your own (⌘ or ⌥ need ⇧ or ⌃ with them, or Windows opens a menu).")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }

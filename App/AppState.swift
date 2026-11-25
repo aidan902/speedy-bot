@@ -120,7 +120,7 @@ final class AppState: ObservableObject {
     @Published private(set) var pasteShortcut: HotKeySpec?
     /// The tech's own shortcut for typing into a session (nil = the standard ⌘⇧V).
     @Published private(set) var typingShortcut: HotKeySpec?
-    /// The tech's own shortcut for typing a 1Password password into a session (nil = the standard ⇧⌘Space).
+    /// The tech's own shortcut for typing a 1Password password into a session (nil = the standard ⌃Space).
     @Published private(set) var passwordShortcut: HotKeySpec?
     /// Why screenshots are not being seen, when they are not (shown in the window).
     @Published private(set) var screenshotNote: String?

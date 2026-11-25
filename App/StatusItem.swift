@@ -58,7 +58,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             menu.addItem(f)
         }
         if state.remoteTyping, state.masterEnabled {
-            menu.addItem(action("Type a 1Password Password…", #selector(password)))
+            menu.addItem(action("Type a 1Password Password…  (\(state.passwordShortcutLabel) in a session)", #selector(password)))
         }
         if state.saveScreenshots {
             menu.addItem(action("Incident: " + (state.incident.isEmpty ? "not set" : state.incident) + "…", #selector(incident)))

@@ -9,12 +9,13 @@ struct HotKeySpec: Equatable {
 
     static let defaultLabel = "⇧⌘V"   // modifier order as macOS menus print it
 
-    /// ⇧⌘Space: type a 1Password password into the session (the keypad's Password key, for techs without the
-    /// keypad). The remote sees only the Windows key and Shift go down and up, which does nothing; the Space never
-    /// reaches it (on Windows, Win+Shift+Space would switch the keyboard language).
-    static let defaultPasswordLabel = "⇧⌘Space"
+    /// ⌃Space: type a 1Password password into the session (the keypad's Password key, for techs without the
+    /// keypad). The remote sees only Ctrl go down and up, which does nothing on Windows; the Space never reaches it.
+    /// (⇧⌘Space is Siri's on recent macOS. Where ⌃Space switches the keyboard's input source, macOS keeps it and the
+    /// tech records another in Settings.)
+    static let defaultPasswordLabel = "⌃Space"
     /// Space is in the same place on every keyboard layout.
-    static let defaultPassword = HotKeySpec(keyCode: kVK_Space, carbonModifiers: cmdKey | shiftKey)
+    static let defaultPassword = HotKeySpec(keyCode: kVK_Space, carbonModifiers: controlKey)
 
     /// The stored shortcuts: typing into a session, pasting a screenshot into ChatGPT, capturing the session window,
     /// typing a 1Password password into the session.
