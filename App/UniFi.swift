@@ -18,7 +18,7 @@ struct UniFiConfig: Equatable, Sendable {
         SpeedyShared.defaults.set(trustCertificate, forKey: SpeedyShared.unifiTrustKey)
     }
 
-    /// "unifi.fm.net" or "https://unifi.fm.net/" become "https://unifi.fm.net".
+    /// "unifi.example.com" or "https://unifi.example.com/" become "https://unifi.example.com".
     static func normalize(_ raw: String) -> String {
         var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if s.isEmpty { return "" }

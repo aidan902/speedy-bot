@@ -218,7 +218,7 @@ if CommandLine.arguments.contains("--selftest") {
     expect("custom", PingCommand.custom.line(ip: "1.2.3.4", port: 443, custom: "ping -l 1400 {ip} -t"), "ping -l 1400 1.2.3.4 -t")
     expect("custom no placeholder", PingCommand.custom.line(ip: "1.2.3.4", port: 443, custom: "tracert"), "tracert 1.2.3.4")
     expect("session name", SessionWindow(pid: 1, windowID: 1, title: "ScreenConnect - FLC-JACKSON - Connected", bounds: .zero).name, "FLC-JACKSON")
-    expect("unifi url", UniFiConfig.normalize("unifi.fm.net/"), "https://unifi.fm.net")
+    expect("unifi url", UniFiConfig.normalize("unifi.example.com/"), "https://unifi.example.com")
     let link = { (s: String) in SpeedyLink.action(of: URL(string: s)!)?.rawValue ?? "nil" }
     expect("link toggle", link("speedybot://toggle"), "toggle")
     expect("link opaque", link("speedybot:toggle"), "toggle")
@@ -274,6 +274,23 @@ if CommandLine.arguments.contains("--selftest") {
     let split = SessionProbe.parse("SPEEDYBOT\n172.16.37.46/23 gw=172.16.36.1\nhost=FLC-JACKSON pub=")
     expect("probe split lines", "\(split?.ip.description ?? "nil")/\(split?.prefix ?? -1) \(split?.gateway ?? "nogw") \(split?.host ?? "nohost") \(split?.publicIP ?? "nopub")", "172.16.37.46/23 172.16.36.1 FLC-JACKSON nopub")
     for f in failures { print("FAIL \(f)") }
+    // The Password key: which site a page is on, and which logins fit it.
+    func line(_ text: String, _ top: Double) -> SessionProbe.Line { SessionProbe.Line(text: text, top: top) }
+    expect("address bar read", OnePassword.pageHosts(in: [line("Sign In", 0.3), line("someone@example.net", 0.4), line("qsys.com/nc/login/my-qsc/", 0.13)]).joined(separator: " "), "qsys.com")
+    expect("bar before page text", OnePassword.pageHosts(in: [line("see help.example.com for more", 0.05), line("https://portal.fm.example.com/login", 0.2)]).first ?? "", "portal.fm.example.com")
+    expect("not files, mail or versions", OnePassword.pageHosts(in: [line("report.pdf", 0.1), line("first.last@corp.com", 0.1), line("v2.42.0", 0.1)]).joined(separator: " "), "")
+    expect("device address", OnePassword.pageHosts(in: [line("Not secure  10.0.0.5:8080/login", 0.1)]).joined(separator: " "), "10.0.0.5")
+    expect("www dropped", OnePassword.host(of: "https://WWW.Example.com/x") ?? "nil", "example.com")
+    expect("search words are not sites", OnePassword.host(of: "qsys login") ?? "nil", "nil")
+    expect("site of", [OnePassword.siteDomain("login.qsys.com"), OnePassword.siteDomain("a.b.co.uk"), OnePassword.siteDomain("10.0.0.5")].joined(separator: " "), "qsys.com b.co.uk 10.0.0.5")
+    expect(".fm sites", ["fm.example.com", "portal.fm.example.com", "radio.fm", "google.com", "fmsomething.com", "notfm.example.com"].map { OnePassword.typesLocally(onHost: $0) ? "y" : "n" }.joined(), "yyynyn")
+    let logins = [OnePassword.Item(id: "1", title: "Q-SYS Reflect", username: "a", vault: "V", urls: ["https://qsys.com/nc/login"]),
+                  OnePassword.Item(id: "2", title: "Front Desk PC", username: "b", vault: "V", urls: ["https://desk.example.com"]),
+                  OnePassword.Item(id: "3", title: "QSC other", username: "c", vault: "V", urls: ["https://my.qsys.com"])]
+    let bySite = OnePassword.ranked(logins, session: "ScreenConnect - Front Desk - Connected", hosts: ["qsys.com"])
+    expect("site first", bySite.items.map(\.id).joined() + " \(bySite.matched) \(bySite.host ?? "-")", "132 true qsys.com")
+    let noSite = OnePassword.ranked(logins, session: "ScreenConnect - Front Desk - Connected", hosts: ["nothing.example.org"])
+    expect("no site: session name", "\(noSite.items.first?.id ?? "-") \(noSite.matched) \(noSite.host ?? "-") \(noSite.read ?? "-")", "2 true - nothing.example.org")
     print("multi ping checks: \(failures.isEmpty ? "all passed" : "\(failures.count) failed")")
     exit(map == nil || !failures.isEmpty ? 1 : 0)
 }
@@ -510,7 +527,32 @@ if CommandLine.arguments.contains("--browser-probe") {
 // running app; the answer is printed and logged ("check-1password:").
 if CommandLine.arguments.contains("--check-1password") {
     diagnosticRun()
-    for line in OnePassword.connectionReport() {
+    var report = OnePassword.connectionReport()
+    // Which site the Password key would match: the remote browser in each ScreenConnect session window (read off the
+    // screen), and the page in each browser on this Mac (and whether it is a .fm site, where it types here).
+    let done = DispatchSemaphore(value: 0)
+    final class Lines: @unchecked Sendable { var all: [String] = [] }
+    let found = Lines()
+    let sessions = NSWorkspace.shared.runningApplications.filter { FrontmostAppGate.isScreenConnect($0) }.compactMap { WindowHitTest.frontWindow(ofPID: $0.processIdentifier) }
+    let browsers = NSWorkspace.shared.runningApplications.filter { PasteTarget.isBrowser($0) }.map { ($0.processIdentifier, $0.localizedName ?? "browser") }
+    Task.detached {
+        for w in sessions {
+            let started = Date()
+            let hosts = await OnePassword.remotePageHosts(windowID: w.windowID)
+            found.all.append("session \"\(w.title)\": \(hosts.isEmpty ? "no site read" : hosts.joined(separator: ", ")) (\(Int(Date().timeIntervalSince(started) * 1000)) ms)")
+        }
+        for (pid, name) in browsers {
+            let started = Date()
+            let page = await OnePassword.browserPage(pid: pid)
+            let host = page.host ?? "no address read"
+            let local = page.host.map { OnePassword.typesLocally(onHost: $0) ? "types here (.fm)" : "not .fm" } ?? ""
+            found.all.append("\(name): \(host) \(local)\(page.inAddressBar ? ", keyboard in the address bar" : "") (\(Int(Date().timeIntervalSince(started) * 1000)) ms)")
+        }
+        done.signal()
+    }
+    done.wait()
+    report += found.all
+    for line in report {
         print("check-1password: \(line)")
         SpeedyShared.log.notice("check-1password: \(line, privacy: .public)")
     }

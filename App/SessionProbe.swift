@@ -58,12 +58,24 @@ enum SessionProbe {
         return text.firstMatch(of: re) != nil
     }
 
+    /// One line of text read off a window, and how far down the window it is (0 = top, 1 = bottom).
+    struct Line: Sendable {
+        let text: String
+        let top: Double
+    }
+
     /// Reads the text shown in a window off the screen (Screen Recording permission). Nil when the capture
     /// or the recognition fails.
     static func screenText(windowID: CGWindowID, keepCaptureAt: String? = nil) async -> String? {
+        await screenLines(windowID: windowID, keepCaptureAt: keepCaptureAt)?.map(\.text).joined(separator: "\n")
+    }
+
+    /// The lines of text shown in a window, with where each one is. Nil when the capture or the recognition fails.
+    /// Only that window is captured (whatever covers it is not), into a file of its own that is deleted at once.
+    static func screenLines(windowID: CGWindowID, keepCaptureAt: String? = nil) async -> [Line]? {
         await withCheckedContinuation { cont in
             DispatchQueue.global(qos: .userInitiated).async {
-                let path = keepCaptureAt ?? NSTemporaryDirectory() + "speedybot-probe-\(getpid()).png"
+                let path = keepCaptureAt ?? NSTemporaryDirectory() + "speedybot-probe-\(getpid())-\(UUID().uuidString).png"
                 defer { if keepCaptureAt == nil { try? FileManager.default.removeItem(atPath: path) } }
                 let started = Date()
                 let task = Process()
@@ -78,9 +90,11 @@ enum SessionProbe {
                 request.recognitionLevel = .accurate
                 request.usesLanguageCorrection = false   // addresses are not words
                 do { try VNImageRequestHandler(cgImage: cg, options: [:]).perform([request]) } catch { cont.resume(returning: nil); return }
-                let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+                let lines = (request.results ?? []).compactMap { o in
+                    o.topCandidates(1).first.map { Line(text: $0.string, top: Double(1 - o.boundingBox.maxY)) }
+                }
                 SpeedyShared.log.notice("screen text: capture \(Int(captured.timeIntervalSince(started) * 1000)) ms (\(cg.width)x\(cg.height)), recognition \(Int(Date().timeIntervalSince(captured) * 1000)) ms, \(lines.count) lines")
-                cont.resume(returning: lines.joined(separator: "\n"))
+                cont.resume(returning: lines)
             }
         }
     }

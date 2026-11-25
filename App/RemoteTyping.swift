@@ -140,6 +140,12 @@ final class RemoteTypingController {
 
     private func fire() {
         guard !typing else { return }
+        // The 1Password search can hold the keyboard while the session stays the app in front: the clipboard would be
+        // typed into the search (and a line break in it could pick a login), and no front-app check here can see that.
+        guard !picker.isOpen else {
+            Toast.show("Close the 1Password search first (Esc), then press \(state.typingShortcutLabel) again", seconds: 3)
+            return
+        }
         guard let front = NSWorkspace.shared.frontmostApplication, FrontmostAppGate.isScreenConnect(front) else { return }
         guard Permissions.accessibilityTrusted, Permissions.canPostEvents else {
             Toast.show("Speedy Bot needs Accessibility permission to type", seconds: 3)
@@ -216,40 +222,106 @@ final class RemoteTypingController {
     /// What a "let go of the keys" note tells the tech to press again.
     private var retryLabel = ""
 
+    /// Where a 1Password pick is typed: a ScreenConnect session window, or a page on a .fm site in a browser on this Mac.
+    private struct PasswordTarget {
+        let app: NSRunningApplication
+        let window: WindowUnderPointer?
+        let focus: FocusProbe
+        /// "The ScreenConnect session" / "The browser", for the notes.
+        let name: String
+        /// On this Mac: the site the page was on when the key was pressed; nothing is typed once it is elsewhere.
+        let pageHost: String?
+    }
+
     /// The keypad's Password key (or the menu): a search over the local 1Password vault, opened over the ScreenConnect
-    /// session in front; the pick is typed into that session window key by key, never through the clipboard.
+    /// session in front, or over a browser on this Mac showing a .fm site. Logins saved for the page's site come first
+    /// (the remote browser's address is read off the session window, this Mac's through accessibility). The pick is
+    /// typed into that window key by key, never through the clipboard. Pressed again while the search is up, it
+    /// types the chosen login.
     func passwordFromKey() {
         guard enabled else { Toast.show("Typing into ScreenConnect is switched off in Speedy Bot", seconds: 2.5); return }
-        guard !typing, !pickInFlight else { return }
-        guard let front = NSWorkspace.shared.frontmostApplication, FrontmostAppGate.isScreenConnect(front) else {
-            Toast.show("Click into the ScreenConnect session first, then press Password", seconds: 2.5)
+        guard !typing, !pickInFlight, !openingPicker else { return }
+        if picker.isOpen {
+            if !picker.pickChosen() { Toast.show("Pick a login first, or type to search", seconds: 2) }
             return
         }
+        guard let front = NSWorkspace.shared.frontmostApplication else { return }
+        guard OnePassword.cliPath != nil else { Toast.show(OnePassword.Failure.notInstalled.message, seconds: 4); return }
+        if FrontmostAppGate.isScreenConnect(front) {
+            passwordForSession(front)
+        } else if PasteTarget.isBrowser(front) {
+            passwordForBrowser(front)
+        } else {
+            Toast.show("Click into a ScreenConnect session, or a .fm site in your browser, then press Password", seconds: 3)
+        }
+    }
+
+    /// The browser page is read before the search opens (well under a second); a second press meanwhile is ignored.
+    private var openingPicker = false
+
+    /// AppKit's frame (bottom-left origin) of a window CG gave (top-left origin of the primary screen).
+    private static func appKitFrame(_ w: WindowUnderPointer) -> NSRect {
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        return NSRect(x: w.bounds.minX, y: primaryHeight - w.bounds.maxY, width: w.bounds.width, height: w.bounds.height)
+    }
+
+    private func passwordForSession(_ front: NSRunningApplication) {
         let focus = FocusProbe.capture(pid: front.processIdentifier)
         if FocusProbe.isChatOrStatus(focus.title) {
             Toast.show("That is the ScreenConnect chat window. Click the remote screen first", seconds: 3)
             return
         }
-        guard OnePassword.cliPath != nil else { Toast.show(OnePassword.Failure.notInstalled.message, seconds: 4); return }
         let window = WindowHitTest.frontWindow(ofPID: front.processIdentifier)
         SpeedyShared.log.notice("1Password: picker opened over the session")
-        // CG window bounds are top-left based; AppKit's are bottom-left from the primary screen.
-        let over = window.map { w -> NSRect in
-            let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
-            return NSRect(x: w.bounds.minX, y: primaryHeight - w.bounds.maxY, width: w.bounds.width, height: w.bounds.height)
-        }
-        picker.show(session: focus.title ?? "", over: over) { [weak self] item, withUser in
-            self?.typePick(item, withUser: withUser, session: front, window: window, focus: focus.probe)
+        let windowID = window?.windowID
+        let target = PasswordTarget(app: front, window: window, focus: focus.probe, name: "The ScreenConnect session", pageHost: nil)
+        picker.show(place: focus.title ?? "the session", session: focus.title ?? "", over: window.map(Self.appKitFrame), hosts: {
+            guard let windowID else { return [] }
+            return await OnePassword.remotePageHosts(windowID: windowID)
+        }) { [weak self] item, withUser in
+            self?.typePick(item, withUser: withUser, target: target)
         }
     }
 
-    private func typePick(_ item: OnePassword.Item, withUser: Bool, session: NSRunningApplication, window: WindowUnderPointer?,
-                          focus: FocusProbe) {
+    /// On this Mac: only on a site with ".fm" in its name, and only into a field on the page (not the address bar).
+    private func passwordForBrowser(_ front: NSRunningApplication) {
+        let pid = front.processIdentifier
+        openingPicker = true
+        Task { @MainActor [weak self] in
+            let page = await OnePassword.browserPage(pid: pid)
+            guard let self else { return }
+            self.openingPicker = false
+            // The tech may have moved on while the page was read.
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid, !self.picker.isOpen, !self.typing, !self.pickInFlight else { return }
+            if page.inAddressBar {
+                Toast.show("Click into the password field on the page first, then press Password", seconds: 3)
+                return
+            }
+            guard let host = page.host else {
+                Toast.show("Could not read this page's address, so nothing was opened", seconds: 3)
+                return
+            }
+            guard OnePassword.typesLocally(onHost: host) else {
+                Toast.show("On this Mac, Password types only on .fm sites (this is \(host))", seconds: 3)
+                return
+            }
+            let focus = FocusProbe.capture(pid: pid)
+            let window = WindowHitTest.frontWindow(ofPID: pid)
+            SpeedyShared.log.notice("1Password: picker opened over a browser page on \(host, privacy: .public)")
+            let target = PasswordTarget(app: front, window: window, focus: focus.probe, name: "The browser", pageHost: host)
+            self.picker.show(place: "\(host) on this Mac", session: "", over: window.map(Self.appKitFrame), hosts: { [host] }) { [weak self] item, withUser in
+                self?.typePick(item, withUser: withUser, target: target)
+            }
+        }
+    }
+
+    private func typePick(_ item: OnePassword.Item, withUser: Bool, target: PasswordTarget) {
         // From the pick on, Esc stops it (and is not passed on to the remote), as does switching Speedy Bot off.
         pickInFlight = true
         cancelled.set(false)
         escKey?.register()
         let me = ProcessInfo.processInfo.processIdentifier
+        let app = target.app, pid = target.app.processIdentifier
         Task { @MainActor in
             @MainActor func stop(_ note: String?) {
                 self.pickInFlight = false
@@ -271,29 +343,36 @@ final class RemoteTypingController {
             if stoppedByTech() { stop("Stopped. Nothing was typed"); return }
             guard !password.isEmpty else { stop("That item has no password"); return }
             guard !withUser || !username.isEmpty else { stop("That item has no username. Press Return for the password only"); return }
-            guard !session.isTerminated else { stop("The ScreenConnect session closed. Nothing was typed"); return }
-            // Only from Speedy Bot's own search (just closed) or the session itself: if the tech has moved to another
+            guard !app.isTerminated else { stop("\(target.name) closed. Nothing was typed"); return }
+            // Only from Speedy Bot's own search (just closed) or the target itself: if the tech has moved to another
             // app meanwhile, they are doing something else.
             let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
-            guard front == me || front == session.processIdentifier else { stop("You moved to another app. Nothing was typed"); return }
-            // Back to the very session window the key was pressed over.
-            if let window { Paster.raise(pid: session.processIdentifier, window: window) }
-            Paster.bringBack(session)
-            for _ in 0..<30 where NSWorkspace.shared.frontmostApplication?.processIdentifier != session.processIdentifier {
+            guard front == me || front == pid else { stop("You moved to another app. Nothing was typed"); return }
+            // Back to the very window the key was pressed over.
+            if let window = target.window { Paster.raise(pid: pid, window: window) }
+            Paster.bringBack(app)
+            for _ in 0..<30 where NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
                 try? await Task.sleep(for: .milliseconds(50))
             }
-            try? await Task.sleep(for: .milliseconds(200))   // the session takes the keyboard back
+            try? await Task.sleep(for: .milliseconds(200))   // the target takes the keyboard back
             if stoppedByTech() { stop("Stopped. Nothing was typed"); return }
-            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == session.processIdentifier, focus.stillFocused() else {
-                stop("The ScreenConnect session did not come back to the front. Nothing was typed")
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid, target.focus.stillFocused() else {
+                stop("\(target.name) did not come back to the front. Nothing was typed")
                 return
+            }
+            // On this Mac: still the same site, and the keyboard on the page (a redirect or a click elsewhere meanwhile
+            // must not get the password).
+            if let expected = target.pageHost {
+                let page = await OnePassword.browserPage(pid: pid)
+                guard page.host == expected, !page.inAddressBar else { stop("The page changed. Nothing was typed"); return }
+                if stoppedByTech() { stop("Stopped. Nothing was typed"); return }
             }
             if TextTyper.capsLockOn { stop("Caps Lock is on. Turn it off and press Password again"); return }
             guard !self.typing, let (plan, options) = self.typingPlan(withUser ? username + "\t" + password : password, secret: true),
                   !plan.keys.isEmpty else { stop(nil); return }
-            SpeedyShared.log.notice("1Password: typing a pick into the session\(withUser ? " (username and password)" : "", privacy: .public)")
+            SpeedyShared.log.notice("1Password: typing a pick into \(target.pageHost == nil ? "the session" : "the browser", privacy: .public)\(withUser ? " (username and password)" : "", privacy: .public)")
             self.pickInFlight = false
-            self.start(plan: plan, options: options, focus: focus, releaseKey: CGKeyCode(kVK_Return), retry: "Password")
+            self.start(plan: plan, options: options, focus: target.focus, releaseKey: CGKeyCode(kVK_Return), retry: "Password")
         }
     }
 
