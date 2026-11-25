@@ -102,6 +102,11 @@ final class AppState: ObservableObject {
     @Published private(set) var screenshotNote: String?
     /// Canonical incident label ("#INC - 12,345"), or "" when none is set.
     @Published private(set) var incident: String
+    /// The last three incident labels used, newest first.
+    @Published private(set) var recentIncidents: [String]
+    /// The hour (local time) the current incident is forgotten each day, so the next day starts without one.
+    nonisolated static let incidentResetHour = 19
+    private var incidentTimer: Timer?
     @Published private(set) var docsRoot: URL
 
     @Published private(set) var accessibilityGranted = Permissions.accessibilityTrusted
@@ -150,6 +155,7 @@ final class AppState: ObservableObject {
         pasteTargets = storedTargets.isEmpty ? [.chatGPT] : Set(storedTargets)
         typingShortcut = HotKeySpec.load(.typing).flatMap { $0.leavesBareModifierTapOnRemote ? nil : $0 }
         incident = SpeedyShared.defaults.string(forKey: SpeedyShared.incidentKey) ?? ""
+        recentIncidents = Array((SpeedyShared.defaults.stringArray(forKey: SpeedyShared.recentIncidentsKey) ?? []).prefix(3))
         docsRoot = SpeedyShared.defaults.string(forKey: SpeedyShared.docsFolderKey).map { URL(fileURLWithPath: $0, isDirectory: true) }
             ?? Documentation.defaultRoot
     }
@@ -203,6 +209,15 @@ final class AppState: ObservableObject {
         RunLoop.main.add(t, forMode: .common)
         permissionTimer = t
         updater.start()
+        // The incident number is forgotten every evening at 7 pm (also when the Mac was asleep or Speedy Bot was not
+        // running then): checked now and once a minute.
+        forgetIncidentIfStale()
+        let it = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.forgetIncidentIfStale() }
+        }
+        it.tolerance = 10
+        RunLoop.main.add(it, forMode: .common)
+        incidentTimer = it
     }
 
     /// Put the Mac back the way it was: the screenshot settings return to the tech's own values.
@@ -271,7 +286,7 @@ final class AppState: ObservableObject {
     }
 
     /// The keypad's action keys (Logitech plugin, via local Darwin notifications).
-    enum KeyAction: String { case type, capture, paste, pasteSend, autoSend, autoMCP, ticket }
+    enum KeyAction: String { case type, capture, paste, pasteSend, autoSend, autoMCP, ticket, ticket1, ticket2, ticket3, ticketNew }
 
     func keyAction(_ action: KeyAction) {
         SpeedyShared.log.notice("keypad: \(action.rawValue, privacy: .public)")
@@ -290,6 +305,12 @@ final class AppState: ObservableObject {
             // After this notification has been handled: the popup runs its own loop until it is answered.
             DispatchQueue.main.async { MainActor.assumeIsolated { self.askForIncident() } }
             return
+        case .ticketNew:
+            DispatchQueue.main.async { MainActor.assumeIsolated { self.askForIncident(fresh: true) } }
+            return
+        case .ticket1, .ticket2, .ticket3:
+            useRecentIncident(action == .ticket1 ? 0 : action == .ticket2 ? 1 : 2)
+            return
         default:
             break
         }
@@ -306,7 +327,7 @@ final class AppState: ObservableObject {
         case .capture:
             screenshot.cancelKeyIntent("another key")
             capture.captureFromKey()
-        case .autoSend, .autoMCP, .ticket:
+        case .autoSend, .autoMCP, .ticket, .ticket1, .ticket2, .ticket3, .ticketNew:
             break
         case .paste, .pasteSend:
             screenshot.pasteFromKey(send: action == .pasteSend, canCapture: active && screenConnectOpen,
@@ -346,6 +367,7 @@ final class AppState: ObservableObject {
             "autoSend": autoSendFromSession,
             "autoMCP": autoMCP,
             "incident": incident,
+            "recentIncidents": recentIncidents,
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: info, options: [.sortedKeys]) else { return }
         let url = Self.stateFileURL
@@ -469,14 +491,60 @@ final class AppState: ObservableObject {
     func setIncident(_ raw: String) {
         incidentDraft = nil
         let value = Incident.canonical(raw)
+        if !value.isEmpty {
+            // Set (or picked again) today: kept until the next 7 pm, and first among the recent ones.
+            SpeedyShared.defaults.set(Date().timeIntervalSince1970, forKey: SpeedyShared.incidentSetAtKey)
+            let recents = Array(([value] + recentIncidents.filter { $0 != value }).prefix(3))
+            if recents != recentIncidents {
+                recentIncidents = recents
+                SpeedyShared.defaults.set(recents, forKey: SpeedyShared.recentIncidentsKey)
+                if value == incident { publishState() }
+            }
+        }
         guard value != incident else { return }
         incident = value
         SpeedyShared.defaults.set(value, forKey: SpeedyShared.incidentKey)
         publishState()
     }
 
-    func askForIncident() {
-        if let answer = IncidentPrompt.ask(current: incident) { setIncident(answer) }
+    func askForIncident(fresh: Bool = false) {
+        if let answer = IncidentPrompt.ask(current: fresh ? "" : incident) { setIncident(answer) }
+    }
+
+    /// The most recent 7 pm at or before `now`.
+    nonisolated static func lastIncidentReset(before now: Date = Date(), calendar: Calendar = .current) -> Date {
+        let today = calendar.date(bySettingHour: incidentResetHour, minute: 0, second: 0, of: now) ?? now
+        return today <= now ? today : (calendar.date(byAdding: .day, value: -1, to: today) ?? today)
+    }
+
+    /// Forgets the incident number once 7 pm has passed since it was set (it stays among the recent ones).
+    func forgetIncidentIfStale(now: Date = Date()) {
+        guard !incident.isEmpty else { return }
+        let setAt = SpeedyShared.defaults.double(forKey: SpeedyShared.incidentSetAtKey)
+        guard setAt > 0 else {
+            // Set before Speedy Bot kept the time: counts from now.
+            SpeedyShared.defaults.set(now.timeIntervalSince1970, forKey: SpeedyShared.incidentSetAtKey)
+            return
+        }
+        guard Date(timeIntervalSince1970: setAt) < Self.lastIncidentReset(before: now) else { return }
+        SpeedyShared.log.notice("incident: forgotten at the evening reset")
+        if !recentIncidents.contains(incident) {
+            recentIncidents = Array(([incident] + recentIncidents).prefix(3))
+            SpeedyShared.defaults.set(recentIncidents, forKey: SpeedyShared.recentIncidentsKey)
+        }
+        incident = ""
+        SpeedyShared.defaults.set("", forKey: SpeedyShared.incidentKey)
+        publishState()
+    }
+
+    /// The keypad's ticket page: use recent incident `index` (0 = newest).
+    private func useRecentIncident(_ index: Int) {
+        guard index < recentIncidents.count else {
+            Toast.show("No recent ticket there yet. Press New to enter one", seconds: 2)
+            return
+        }
+        setIncident(recentIncidents[index])
+        Toast.show("Ticket: \(incident)", seconds: 1.6)
     }
 
     func setDocsRoot(_ url: URL) {

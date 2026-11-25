@@ -97,7 +97,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let keys: [(String, AppState.KeyAction)] = [(SpeedyShared.keyTypeNotification, .type), (SpeedyShared.keyCaptureNotification, .capture),
                                                      (SpeedyShared.keyPasteNotification, .paste), (SpeedyShared.keyPasteSendNotification, .pasteSend),
                                                      (SpeedyShared.keyAutoSendNotification, .autoSend), (SpeedyShared.keyAutoMCPNotification, .autoMCP),
-                                                     (SpeedyShared.keyTicketNotification, .ticket)]
+                                                     (SpeedyShared.keyTicketNotification, .ticket),
+                                                     (SpeedyShared.keyTicket1Notification, .ticket1), (SpeedyShared.keyTicket2Notification, .ticket2),
+                                                     (SpeedyShared.keyTicket3Notification, .ticket3), (SpeedyShared.keyTicketNewNotification, .ticketNew)]
         for (name, action) in keys {
             observers.append(DarwinObserver(name: name) { [weak self] in
                 let key = action.rawValue.lowercased()
@@ -193,6 +195,15 @@ if CommandLine.arguments.contains("--selftest") {
     expect("inside /23", String(TargetParser.parse(".36.5", base: base, prefix: 23).targets.first?.insideNetwork ?? false), "true")
     expect("no base", TargetParser.parse(".1", base: nil, prefix: 24).targets.first?.problem ?? "nil", "needs the remote machine's address")
     expect("cap", String(TargetParser.parse("0-255", base: base, prefix: 24).targets.count), String(TargetParser.maxTargets))
+    // The evening reset of the incident number: the most recent 7 pm.
+    var cal = Calendar(identifier: .gregorian)
+    cal.timeZone = TimeZone(identifier: "America/Chicago")!
+    let fmt = ISO8601DateFormatter()
+    fmt.timeZone = cal.timeZone
+    let at = { (s: String) in fmt.date(from: s)! }
+    expect("reset before 7pm", fmt.string(from: AppState.lastIncidentReset(before: at("2026-11-25T18:59:00-06:00"), calendar: cal)), "2026-11-24T19:00:00-06:00")
+    expect("reset at 7pm", fmt.string(from: AppState.lastIncidentReset(before: at("2026-11-25T19:00:00-06:00"), calendar: cal)), "2026-11-25T19:00:00-06:00")
+    expect("reset morning", fmt.string(from: AppState.lastIncidentReset(before: at("2026-11-26T08:00:00-06:00"), calendar: cal)), "2026-11-25T19:00:00-06:00")
     let reading = SessionProbe.parse("PS C:\\> junk\nSPEEDYBOT 172.16.37.46/23 gw=172.16.36.1 host=FLC-JACKSON pub=203.0.113.9\nPS C:\\>")
     expect("probe ip", reading?.ip.description ?? "nil", "172.16.37.46")
     expect("probe prefix", String(reading?.prefix ?? -1), "23")

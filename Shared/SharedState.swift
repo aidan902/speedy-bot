@@ -14,6 +14,10 @@ enum SpeedyShared {
     static let fastTypingKey = "fastTyping"
     static let saveScreenshotsKey = "saveScreenshots"
     static let incidentKey = "incident"
+    /// The last three incident labels used, newest first (the keypad's ticket page offers them).
+    static let recentIncidentsKey = "recentIncidents"
+    /// When the current incident was set (seconds since 1970): it is forgotten at the next 7 pm.
+    static let incidentSetAtKey = "incidentSetAt"
     static let docsFolderKey = "docsFolder"
     /// Leave the system's screenshot behaviour alone (saved file, corner preview) and pick the saved file up instead.
     static let keepNormalScreenshotsKey = "keepNormalScreenshots"
@@ -84,6 +88,11 @@ enum SpeedyShared {
     static let keyAutoSendNotification = groupID + ".key.autosend"
     static let keyAutoMCPNotification = groupID + ".key.automcp"
     static let keyTicketNotification = groupID + ".key.ticket"
+    /// Keypad ticket page: use one of the three recent incident numbers, or enter a new one.
+    static let keyTicket1Notification = groupID + ".key.ticket1"
+    static let keyTicket2Notification = groupID + ".key.ticket2"
+    static let keyTicket3Notification = groupID + ".key.ticket3"
+    static let keyTicketNewNotification = groupID + ".key.ticketnew"
     /// Kind string of the Control Center control.
     static let controlKind = "net.fm.speedybot.toggle"
 
