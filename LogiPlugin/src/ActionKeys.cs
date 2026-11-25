@@ -88,6 +88,17 @@ namespace Loupedeck.SpeedyBotPlugin
         protected override BitmapImage GetCommandImage(String actionParameter, PluginImageSize imageSize) => AppSignal.Image(imageSize, "TYPE", KeyArt.Purple);
     }
 
+    public class PasswordCommand : PluginDynamicCommand
+    {
+        public PasswordCommand() : base("Password (1Password)", "Searches the 1Password on this Mac and types the chosen password into the ScreenConnect session in front, key by key.", "Speedy Bot") { }
+        protected override Boolean OnLoad() { SpeedyBotState.Shared.Changed += this.Repaint; SpeedyBotState.Shared.Start(); return true; }
+        protected override Boolean OnUnload() { SpeedyBotState.Shared.Changed -= this.Repaint; return true; }
+        private void Repaint() => this.ActionImageChanged();
+        protected override void RunCommand(String actionParameter) => AppSignal.Post("password");
+        protected override String GetCommandDisplayName(String actionParameter, PluginImageSize imageSize) => "Password";
+        protected override BitmapImage GetCommandImage(String actionParameter, PluginImageSize imageSize) => AppSignal.Image(imageSize, "PASSWORD", KeyArt.Orange);
+    }
+
     public class CaptureCommand : PluginDynamicCommand
     {
         public CaptureCommand() : base("Capture session (⇧⌘2)", "Takes a screenshot of the whole ScreenConnect session window, like ⇧⌘2.", "Speedy Bot") { }

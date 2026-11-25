@@ -18,7 +18,7 @@ else on the command line (a misspelled option, say) stops the script before it c
 
 Keys, row by row: On | Off | Auto (the current mode's key lights up: green, red, orange); Auto-send on/off | Type
 the clipboard into the session (like ⌘⇧V, purple) | Ticket (the incident number); Capture the session window (like
-⇧⌘2) | empty | Auto LLM on/off. Needs the Speedy Bot plugin installed (LogiPlugin/build.sh). The keypad is device
+⇧⌘2) | Password (search the local 1Password, type the pick into the session; orange) | Auto LLM on/off. Needs the Speedy Bot plugin installed (LogiPlugin/build.sh). The keypad is device
 Loupedeck70.
 
 The ScreenConnect profile is written the way the plugin service's own CreateNewApplicationProfile makes one for an
@@ -38,11 +38,11 @@ SC_DIR = os.path.join(DEVICE_DIR, SC_BUNDLE.lower())
 SB_BUNDLE = "net.fm.speedybot"
 P = "$SpeedyBot___Loupedeck.SpeedyBotPlugin."
 # Plain commands only: Logi Options+ shows a warning sign instead of the picture of a parameterized command.
-# The page, row by row:  On | Off | Auto  /  Auto send | Type (⌘⇧V) | Ticket  /  Capture (⇧⌘2) | - | Auto LLM
+# The page, row by row:  On | Off | Auto  /  Auto send | Type (⌘⇧V) | Ticket  /  Capture (⇧⌘2) | Password | Auto LLM
 # Ticket is a folder: a press opens recent 1 | 2 | 3  /  -  /  Back | New | -  (TicketFolder).
 KEYS = [P + "OnCommand", P + "OffCommand", P + "AutoCommand",
         P + "AutoSendCommand", P + "TypeCommand", "$SpeedyBot___#DynamicFolder___DynamicFolder#Loupedeck.SpeedyBotPlugin.TicketFolder",
-        P + "CaptureCommand", None, P + "AutoMcpCommand"]
+        P + "CaptureCommand", P + "PasswordCommand", P + "AutoMcpCommand"]
 # Keys made by 0.7.1 (one parameterized command) -> the plain commands that replace it.
 MIGRATE = {P + "ModeCommand___on": P + "OnCommand", P + "ModeCommand___auto": P + "AutoCommand",
            P + "ModeCommand___off": P + "OffCommand", P + "ModeCommand___multiping": P + "MultiPingCommand"}

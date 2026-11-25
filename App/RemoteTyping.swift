@@ -168,21 +168,7 @@ final class RemoteTypingController {
             Toast.show("Caps Lock is on. Turn it off and press \(state.typingShortcutLabel) again", seconds: 3)
             return
         }
-        guard let keyMap = LayoutKeyMap.current() else {
-            Toast.show("Could not read this Mac's keyboard layout")
-            return
-        }
-        let options = state.fastTyping ? TypingOptions.fast : TypingOptions()
-        let plan = TextTyper.plan(text, keyMap: keyMap, options: options)
-        // All or nothing. A password with one character missing is a wrong password, and a command with a
-        // character missing is a different command.
-        guard plan.skipped.isEmpty else {
-            var seen = Set<Character>()
-            let sample = String(plan.skipped.filter { seen.insert($0).inserted }.prefix(8))
-            Toast.show("This keyboard cannot type: \(sample)  Nothing was typed", seconds: 4)
-            SpeedyShared.log.notice("typing refused: characters not on this keyboard layout")
-            return
-        }
+        guard let (plan, options) = typingPlan(text) else { return }
         guard !plan.keys.isEmpty else { Toast.show("Clipboard has no text to type"); return }
 
         if text.count > confirmAbove {
@@ -198,9 +184,92 @@ final class RemoteTypingController {
         start(plan: plan, options: options, focus: focus.probe)
     }
 
+    /// The keys for `text` on this Mac's layout, or nil (with a note) when the layout cannot be read or cannot type
+    /// every character: all or nothing, since a password with one character missing is a wrong password, and a
+    /// command with a character missing is a different command.
+    private func typingPlan(_ text: String) -> (TypingPlan, TypingOptions)? {
+        guard let keyMap = LayoutKeyMap.current() else {
+            Toast.show("Could not read this Mac's keyboard layout")
+            return nil
+        }
+        let options = state.fastTyping ? TypingOptions.fast : TypingOptions()
+        let plan = TextTyper.plan(text, keyMap: keyMap, options: options)
+        guard plan.skipped.isEmpty else {
+            var seen = Set<Character>()
+            let sample = String(plan.skipped.filter { seen.insert($0).inserted }.prefix(8))
+            Toast.show("This keyboard cannot type: \(sample)  Nothing was typed", seconds: 4)
+            SpeedyShared.log.notice("typing refused: characters not on this keyboard layout")
+            return nil
+        }
+        return (plan, options)
+    }
+
+    // MARK: 1Password
+
+    private lazy var picker = PasswordPicker()
+
+    /// The keypad's Password key (or the menu): a search over the local 1Password vault, opened over the ScreenConnect
+    /// session in front; the pick is typed into that session window key by key, never through the clipboard.
+    func passwordFromKey() {
+        guard enabled else { Toast.show("Typing into ScreenConnect is switched off in Speedy Bot", seconds: 2.5); return }
+        guard !typing else { return }
+        guard let front = NSWorkspace.shared.frontmostApplication, FrontmostAppGate.isScreenConnect(front) else {
+            Toast.show("Click into the ScreenConnect session first, then press Password", seconds: 2.5)
+            return
+        }
+        let focus = FocusProbe.capture(pid: front.processIdentifier)
+        if FocusProbe.isChatOrStatus(focus.title) {
+            Toast.show("That is the ScreenConnect chat window. Click the remote screen first", seconds: 3)
+            return
+        }
+        guard OnePassword.cliPath != nil else { Toast.show(OnePassword.Failure.notInstalled.message, seconds: 4); return }
+        let window = WindowHitTest.frontWindow(ofPID: front.processIdentifier)
+        SpeedyShared.log.notice("1Password: picker opened over the session")
+        picker.show(session: focus.title ?? "") { [weak self] item, withUser in
+            self?.typePick(item, withUser: withUser, session: front, window: window, focus: focus.probe)
+        }
+    }
+
+    private func typePick(_ item: OnePassword.Item, withUser: Bool, session: NSRunningApplication, window: WindowUnderPointer?,
+                          focus: FocusProbe) {
+        Task { @MainActor in
+            let password: String, username: String
+            do {
+                password = try await OnePassword.field("password", of: item.id)
+                username = withUser ? try await OnePassword.field("username", of: item.id) : ""
+            } catch let failure as OnePassword.Failure {
+                Toast.show(failure.message, seconds: 4)
+                return
+            } catch {
+                Toast.show("1Password could not be read", seconds: 3)
+                return
+            }
+            guard !password.isEmpty else { Toast.show("That item has no password", seconds: 2.5); return }
+            guard !withUser || !username.isEmpty else { Toast.show("That item has no username. Press Return for the password only", seconds: 3); return }
+            guard !session.isTerminated else { Toast.show("The ScreenConnect session closed. Nothing was typed", seconds: 3); return }
+            // Back to the very session window the key was pressed over.
+            if let window { Paster.raise(pid: session.processIdentifier, window: window) }
+            Paster.bringBack(session)
+            for _ in 0..<30 where NSWorkspace.shared.frontmostApplication?.processIdentifier != session.processIdentifier {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            try? await Task.sleep(for: .milliseconds(200))   // the session takes the keyboard back
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == session.processIdentifier, focus.stillFocused() else {
+                Toast.show("The ScreenConnect session did not come back to the front. Nothing was typed", seconds: 3)
+                return
+            }
+            if TextTyper.capsLockOn { Toast.show("Caps Lock is on. Turn it off and press Password again", seconds: 3); return }
+            guard !typing, let (plan, options) = typingPlan(withUser ? username + "\t" + password : password), !plan.keys.isEmpty else { return }
+            SpeedyShared.log.notice("1Password: typing a pick into the session\(withUser ? " (username and password)" : "", privacy: .public)")
+            start(plan: plan, options: options, focus: focus, releaseKey: CGKeyCode(kVK_Return))
+        }
+    }
+
     // MARK: typing
 
-    private func start(plan: TypingPlan, options: TypingOptions, focus: FocusProbe) {
+    /// `releaseKey`: the key that started this (the shortcut's, or Return in the 1Password search), which has to be
+    /// up before anything is typed.
+    private func start(plan: TypingPlan, options: TypingOptions, focus: FocusProbe, releaseKey: CGKeyCode? = nil) {
         typing = true
         targetPID = focus.pid
         cancelled.set(false)
@@ -209,7 +278,7 @@ final class RemoteTypingController {
         state.typing = true
         SpeedyShared.log.notice("typing started")   // no lengths: the clipboard is often a password
 
-        let cancelled = self.cancelled, sessionInFront = self.sessionInFront, hotKeyCode = self.hotKeyCode
+        let cancelled = self.cancelled, sessionInFront = self.sessionInFront, hotKeyCode = releaseKey ?? self.hotKeyCode
         DispatchQueue.global(qos: .userInitiated).async {
             // The remote has already seen the real Cmd and Shift go down. Typing before they come back up
             // would turn every letter into a Windows-key shortcut on the other end.

@@ -57,6 +57,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             f.isEnabled = state.masterEnabled
             menu.addItem(f)
         }
+        if state.remoteTyping, state.masterEnabled {
+            menu.addItem(action("Type a 1Password Password into the Session…", #selector(password)))
+        }
         if state.saveScreenshots {
             menu.addItem(action("Incident: " + (state.incident.isEmpty ? "not set" : state.incident) + "…", #selector(incident)))
             menu.addItem(action("Open Documentation Folder", #selector(openDocs)))
@@ -137,6 +140,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func toggleCapture() { state.captureWindow.toggle() }
     @objc private func toggleSave() { state.saveScreenshots.toggle() }
     @objc private func incident() { state.askForIncident() }
+    @objc private func password() { state.keyAction(.password) }
     @objc private func openDocs() { state.openDocsFolder() }
     @objc private func setup() { state.showSetup?() }
     @objc private func checkUpdates() { state.showWindow?(); state.updater.check(userAsked: true) }

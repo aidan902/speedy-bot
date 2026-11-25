@@ -315,7 +315,7 @@ final class AppState: ObservableObject {
     }
 
     /// The keypad's action keys (Logitech plugin, via local Darwin notifications).
-    enum KeyAction: String { case type, capture, paste, pasteSend, autoSend, autoMCP, ticket, ticket1, ticket2, ticket3, ticketNew }
+    enum KeyAction: String { case type, capture, paste, pasteSend, autoSend, autoMCP, ticket, ticket1, ticket2, ticket3, ticketNew, password }
 
     func keyAction(_ action: KeyAction) {
         SpeedyShared.log.notice("keypad: \(action.rawValue, privacy: .public)")
@@ -353,6 +353,9 @@ final class AppState: ObservableObject {
         case .type:
             screenshot.cancelKeyIntent("another key")
             typer.typeFromKey()
+        case .password:
+            screenshot.cancelKeyIntent("another key")
+            typer.passwordFromKey()
         case .capture:
             screenshot.cancelKeyIntent("another key")
             capture.captureFromKey()

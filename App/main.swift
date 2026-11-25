@@ -99,7 +99,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                                      (SpeedyShared.keyAutoSendNotification, .autoSend), (SpeedyShared.keyAutoMCPNotification, .autoMCP),
                                                      (SpeedyShared.keyTicketNotification, .ticket),
                                                      (SpeedyShared.keyTicket1Notification, .ticket1), (SpeedyShared.keyTicket2Notification, .ticket2),
-                                                     (SpeedyShared.keyTicket3Notification, .ticket3), (SpeedyShared.keyTicketNewNotification, .ticketNew)]
+                                                     (SpeedyShared.keyTicket3Notification, .ticket3), (SpeedyShared.keyTicketNewNotification, .ticketNew),
+                                                     (SpeedyShared.keyPasswordNotification, .password)]
         for (name, action) in keys {
             observers.append(DarwinObserver(name: name) { [weak self] in
                 let key = action.rawValue.lowercased()

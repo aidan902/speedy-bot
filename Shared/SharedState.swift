@@ -97,6 +97,8 @@ enum SpeedyShared {
     static let keyTicket2Notification = groupID + ".key.ticket2"
     static let keyTicket3Notification = groupID + ".key.ticket3"
     static let keyTicketNewNotification = groupID + ".key.ticketnew"
+    /// Keypad Password key: search the local 1Password and type the pick into the ScreenConnect session.
+    static let keyPasswordNotification = groupID + ".key.password"
     /// Kind string of the Control Center control.
     static let controlKind = "net.fm.speedybot.toggle"
 
